@@ -115,9 +115,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   listen<string>("vad-segment-saved", (event) => {
     console.log("VAD segment saved:", event.payload);
-    if (lastSavedEl && statusEl && isVoiceMode) {
+    if (lastSavedEl && statusEl) {
       lastSavedEl.textContent = `Saved: ${event.payload}`;
-      statusEl.textContent = "Listening for voice…";
+      if (isVoiceMode) {
+        statusEl.textContent = "Listening for voice…";
+      }
     }
   });
 
