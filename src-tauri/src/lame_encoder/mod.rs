@@ -163,10 +163,255 @@ impl Lame {
             }
         }
     }
+
+    /// Flushes any remaining PCM data and returns the final MP3 frames.
+    /// This should be called when done encoding to ensure all data is written.
+    pub fn flush(&mut self, mp3_buffer: &mut [u8]) -> Result<usize, EncodeError> {
+        let retn = unsafe {
+            lame_ffi::lame_encode_flush(self.ptr, mp3_buffer.as_mut_ptr(), int_size(mp3_buffer.len()))
+        };
+
+        match retn {
+            -1 => Err(EncodeError::OutputBufferTooSmall),
+            -2 => Err(EncodeError::NoMem),
+            -3 => Err(EncodeError::InitParamsNotCalled),
+            -4 => Err(EncodeError::PsychoAcousticError),
+            _ => {
+                if retn < 0 {
+                    Err(EncodeError::Unknown(retn))
+                } else {
+                    Ok(retn as usize)
+                }
+            }
+        }
+    }
 }
 
 impl Drop for Lame {
     fn drop(&mut self) {
         unsafe { lame_ffi::lame_close(self.ptr) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+
+    #[test]
+    fn test_lame_encoder_creation() {
+        let encoder = Lame::new();
+        assert!(encoder.is_some(), "Should be able to create LAME encoder");
+    }
+
+    #[test]
+    fn test_lame_encoder_configuration() {
+        let mut encoder = Lame::new().expect("Failed to create LAME encoder");
+
+        // Test setting sample rate
+        assert!(encoder.set_sample_rate(44100).is_ok());
+        assert_eq!(encoder.sample_rate(), 44100);
+
+        // Test setting channels
+        assert!(encoder.set_channels(2).is_ok());
+        assert_eq!(encoder.channels(), 2);
+
+        // Test setting quality
+        assert!(encoder.set_quality(5).is_ok());
+        assert_eq!(encoder.quality(), 5);
+
+        // Test setting bitrate
+        assert!(encoder.set_kilobitrate(128).is_ok());
+        assert_eq!(encoder.kilobitrate(), 128);
+
+        // Test initialization
+        assert!(encoder.init_params().is_ok());
+    }
+
+    #[test]
+    fn test_mp3_encoding_basic() {
+        let mut encoder = Lame::new().expect("Failed to create LAME encoder");
+
+        // Configure encoder
+        assert!(encoder.set_sample_rate(44100).is_ok());
+        assert!(encoder.set_channels(2).is_ok());
+        assert!(encoder.set_kilobitrate(128).is_ok());
+        assert!(encoder.set_quality(5).is_ok());
+        assert!(encoder.init_params().is_ok());
+
+        // Generate test audio data (1152 samples per channel, one MP3 frame)
+        let samples_per_channel = 1152;
+        let mut left_channel = vec![0i16; samples_per_channel];
+        let mut right_channel = vec![0i16; samples_per_channel];
+
+        // Generate a simple sine wave at 440Hz
+        for i in 0..samples_per_channel {
+            let t = i as f32 / 44100.0;
+            let sample_value = (2.0 * std::f32::consts::PI * 440.0 * t).sin();
+            let sample_i16 = (sample_value * 16384.0) as i16;
+            left_channel[i] = sample_i16;
+            right_channel[i] = sample_i16;
+        }
+
+        // Encode the audio
+        let mut mp3_buffer = vec![0u8; 16384];
+        let result = encoder.encode(&left_channel, &right_channel, &mut mp3_buffer);
+
+        assert!(result.is_ok(), "Encoding should succeed");
+        let bytes_written = result.unwrap();
+        assert!(bytes_written > 0, "Should produce some MP3 data");
+        println!("Encoded {} samples into {} bytes", samples_per_channel * 2, bytes_written);
+    }
+
+    #[test]
+    fn test_mp3_encoding_with_flush() {
+        let mut encoder = Lame::new().expect("Failed to create LAME encoder");
+
+        // Configure encoder
+        assert!(encoder.set_sample_rate(44100).is_ok());
+        assert!(encoder.set_channels(2).is_ok());
+        assert!(encoder.set_kilobitrate(128).is_ok());
+        assert!(encoder.set_quality(5).is_ok());
+        assert!(encoder.init_params().is_ok());
+
+        let mut total_bytes = 0;
+
+        // Encode multiple frames
+        for frame in 0..10 {
+            let samples_per_channel = 1152;
+            let mut left_channel = vec![0i16; samples_per_channel];
+            let mut right_channel = vec![0i16; samples_per_channel];
+
+            // Generate different frequency for each frame
+            let frequency = 440.0 + (frame as f32 * 110.0);
+            for i in 0..samples_per_channel {
+                let t = i as f32 / 44100.0;
+                let sample_value = (2.0 * std::f32::consts::PI * frequency * t).sin();
+                let sample_i16 = (sample_value * 16384.0) as i16;
+                left_channel[i] = sample_i16;
+                right_channel[i] = sample_i16;
+            }
+
+            let mut mp3_buffer = vec![0u8; 16384];
+            let result = encoder.encode(&left_channel, &right_channel, &mut mp3_buffer);
+            assert!(result.is_ok(), "Frame {} encoding should succeed", frame);
+            total_bytes += result.unwrap();
+        }
+
+        // Test flush
+        let mut flush_buffer = vec![0u8; 7200];
+        let flush_result = encoder.flush(&mut flush_buffer);
+        assert!(flush_result.is_ok(), "Flush should succeed");
+        total_bytes += flush_result.unwrap();
+
+        assert!(total_bytes > 0, "Should have produced MP3 data");
+        println!("Total MP3 bytes produced: {}", total_bytes);
+    }
+
+    #[test]
+    fn test_mp3_file_creation() {
+        let mut encoder = Lame::new().expect("Failed to create LAME encoder");
+
+        // Configure encoder
+        assert!(encoder.set_sample_rate(44100).is_ok());
+        assert!(encoder.set_channels(2).is_ok());
+        assert!(encoder.set_kilobitrate(128).is_ok());
+        assert!(encoder.set_quality(5).is_ok());
+        assert!(encoder.init_params().is_ok());
+
+        // Create a temporary file
+        let temp_path = std::env::temp_dir().join("test_encoding.mp3");
+        let mut file = File::create(&temp_path).expect("Should create temp file");
+
+        let mut total_bytes_written = 0;
+
+        // Generate 1 second of audio (44100 samples per channel)
+        let total_samples = 44100;
+        let chunk_size = 1152; // LAME frame size
+
+        for chunk_start in (0..total_samples).step_by(chunk_size) {
+            let chunk_end = (chunk_start + chunk_size).min(total_samples);
+            let chunk_len = chunk_end - chunk_start;
+
+            let mut left_channel = vec![0i16; chunk_len];
+            let mut right_channel = vec![0i16; chunk_len];
+
+            // Generate sine wave
+            for i in 0..chunk_len {
+                let sample_idx = chunk_start + i;
+                let t = sample_idx as f32 / 44100.0;
+                let sample_value = (2.0 * std::f32::consts::PI * 440.0 * t).sin();
+                let sample_i16 = (sample_value * 16384.0) as i16;
+                left_channel[i] = sample_i16;
+                right_channel[i] = sample_i16;
+            }
+
+            let mut mp3_buffer = vec![0u8; 16384];
+            let result = encoder.encode(&left_channel, &right_channel, &mut mp3_buffer);
+            assert!(result.is_ok(), "Chunk encoding should succeed");
+
+            let bytes_written = result.unwrap();
+            if bytes_written > 0 {
+                file.write_all(&mp3_buffer[..bytes_written])
+                    .expect("Should write MP3 data to file");
+                total_bytes_written += bytes_written;
+            }
+        }
+
+        // Flush remaining data
+        let mut flush_buffer = vec![0u8; 7200];
+        let flush_result = encoder.flush(&mut flush_buffer);
+        assert!(flush_result.is_ok(), "Flush should succeed");
+
+        let flush_bytes = flush_result.unwrap();
+        if flush_bytes > 0 {
+            file.write_all(&flush_buffer[..flush_bytes])
+                .expect("Should write flush data to file");
+            total_bytes_written += flush_bytes;
+        }
+
+        file.flush().expect("Should flush file");
+        drop(file);
+
+        // Verify file was created and has content
+        let metadata = std::fs::metadata(&temp_path).expect("File should exist");
+        assert!(metadata.len() > 0, "MP3 file should have content");
+        assert_eq!(metadata.len() as usize, total_bytes_written, "File size should match bytes written");
+
+        println!("Created test MP3 file: {} ({} bytes)", temp_path.display(), total_bytes_written);
+
+        // Cleanup
+        std::fs::remove_file(&temp_path).expect("Should cleanup temp file");
+    }
+
+    #[test]
+    fn test_different_quality_settings() {
+        let quality_settings = [(64, 9), (128, 7), (192, 5), (320, 2)];
+
+        for (bitrate, quality) in quality_settings.iter() {
+            let mut encoder = Lame::new().expect("Failed to create LAME encoder");
+
+            assert!(encoder.set_sample_rate(44100).is_ok());
+            assert!(encoder.set_channels(2).is_ok());
+            assert!(encoder.set_kilobitrate(*bitrate).is_ok());
+            assert!(encoder.set_quality(*quality).is_ok());
+            assert!(encoder.init_params().is_ok());
+
+            // Verify settings were applied
+            assert_eq!(encoder.kilobitrate(), *bitrate);
+            assert_eq!(encoder.quality(), *quality);
+
+            // Test encoding works with these settings
+            let samples_per_channel = 1152;
+            let left_channel = vec![100i16; samples_per_channel];
+            let right_channel = vec![-100i16; samples_per_channel];
+
+            let mut mp3_buffer = vec![0u8; 16384];
+            let result = encoder.encode(&left_channel, &right_channel, &mut mp3_buffer);
+
+            assert!(result.is_ok(), "Encoding with bitrate {} should succeed", bitrate);
+            println!("Bitrate {}: {} bytes encoded", bitrate, result.unwrap());
+        }
     }
 }

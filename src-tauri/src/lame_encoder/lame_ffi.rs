@@ -18,4 +18,5 @@ extern "C" {
     pub fn lame_encode_buffer(ptr: LamePtr,
         pcm_l: *const i16, pcm_r: *const i16, pcm_numsamples: c_int,
         mp3buf: *mut u8, mp3buf_size: c_int) -> c_int;
+    pub fn lame_encode_flush(ptr: LamePtr, mp3buf: *mut u8, mp3buf_size: c_int) -> c_int;
 }

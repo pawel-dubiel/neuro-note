@@ -11,9 +11,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use tauri::{Emitter, State};
 
-mod lame_encoder;
+pub mod lame_encoder;
 
-enum AudioWriter {
+pub enum AudioWriter {
     Wav(hound::WavWriter<BufWriter<File>>),
     Mp3 {
         encoder: lame_encoder::Lame,
@@ -24,7 +24,7 @@ enum AudioWriter {
 }
 
 impl AudioWriter {
-    fn write_sample(&mut self, sample: i16) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn write_sample(&mut self, sample: i16) -> Result<(), Box<dyn std::error::Error>> {
         match self {
             AudioWriter::Wav(writer) => {
                 writer.write_sample(sample)?;
@@ -75,10 +75,11 @@ impl AudioWriter {
                 Ok(bytes_written) => {
                     if bytes_written > 0 {
                         file.write_all(&mp3_buffer[..bytes_written])?;
+                        log_to_file(&format!("MP3: Encoded {} samples -> {} bytes", buffer.len(), bytes_written));
                     }
                 }
                 Err(e) => {
-                    eprintln!("MP3 encode error: {:?}", e);
+                    log_to_file(&format!("MP3 encode error: {:?}", e));
                 }
             }
 
@@ -87,7 +88,7 @@ impl AudioWriter {
         Ok(())
     }
 
-    fn finalize(mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn finalize(mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Flush any remaining samples first
         self.flush_mp3_buffer()?;
 
@@ -95,9 +96,19 @@ impl AudioWriter {
             AudioWriter::Wav(writer) => {
                 writer.finalize()?;
             }
-            AudioWriter::Mp3 { mut file, .. } => {
-                // Note: LAME doesn't provide a direct finalize function in our FFI,
-                // but in a complete implementation you'd call lame_encode_flush here
+            AudioWriter::Mp3 { mut encoder, mut file, .. } => {
+                // Flush any remaining encoded data from LAME
+                let mut final_buffer = vec![0u8; 7200]; // LAME documentation suggests 7200 bytes max for flush
+                match encoder.flush(&mut final_buffer) {
+                    Ok(bytes_written) => {
+                        if bytes_written > 0 {
+                            file.write_all(&final_buffer[..bytes_written])?;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("LAME flush error: {:?}", e);
+                    }
+                }
                 file.flush()?;
             }
         }
@@ -111,7 +122,7 @@ fn log_to_file(message: &str) {
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&docs_dir) 
+            .open(&docs_dir)
         {
             let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
             let _ = writeln!(file, "[{}] {}", timestamp, message);
@@ -429,6 +440,7 @@ fn arm_auto_recording(
                     }
                 };
 
+                log_to_file(&format!("Created MP3 encoder with bitrate={}, quality_level={}, channels={}", bitrate, quality_level, channels));
                 Arc::new(Mutex::new(Some(AudioWriter::Mp3 {
                     encoder,
                     file,
@@ -457,7 +469,7 @@ fn arm_auto_recording(
         };
         let session_path = base.clone();
         let session_writer_cb = Arc::clone(&session_writer);
-        
+
         log_to_file(&format!("Created continuous recording file: {}", session_path.to_string_lossy()));
         let mut smoothed = 0.0f32;
         let mut above_ms = 0u32;
@@ -523,68 +535,69 @@ fn arm_auto_recording(
 
             // Voice detection with continuous file recording
             if cooldown_left_ms > 0 { cooldown_left_ms = cooldown_left_ms.saturating_sub(chunk_ms as u32); }
-            
+
             // Zero-crossing rate heuristic to reject constant hum
             let mut zc = 0u32; let step = channels.max(1); let mut prev = 0i16;
             for (i, &s) in as_i16.iter().step_by(step).enumerate() { if i > 0 && ((s ^ prev) < 0) { zc += 1; } prev = s; }
             let zcr = if chunk_ms > 0.0 { (zc as f32) * 1000.0 / chunk_ms } else { 0.0 };
             let zcr_ok = zcr > 50.0;
-            
+
             // More lenient voice detection - removed strict peak requirement and ZCR
             let voice_detected = cooldown_left_ms == 0 && (smoothed > threshold_eff || peak > threshold_eff * 0.8);
-            
+
             // Log detection attempts every second for debugging
             static mut DEBUG_COUNTER: u32 = 0;
             unsafe {
                 DEBUG_COUNTER += chunk_ms as u32;
                 if DEBUG_COUNTER >= 1000 {
-                    log_to_file(&format!("Detection check: smoothed={:.4}, peak={:.4}, threshold={:.4}, zcr={:.1}, zcr_ok={}, cooldown={}ms", 
+                    log_to_file(&format!("Detection check: smoothed={:.4}, peak={:.4}, threshold={:.4}, zcr={:.1}, zcr_ok={}, cooldown={}ms",
                         smoothed, peak, threshold_eff, zcr, zcr_ok, cooldown_left_ms));
                     DEBUG_COUNTER = 0;
                 }
             }
-            
-            if voice_detected { 
-                above_ms += chunk_ms as u32; 
+
+            if voice_detected {
+                above_ms += chunk_ms as u32;
                 if above_ms % 100 == 0 { // Log every 100ms while detecting voice
                     log_to_file(&format!("Voice detected: {}ms (smoothed={:.3}, peak={:.3}, threshold={:.3}, zcr={:.1})", above_ms, smoothed, peak, threshold_eff, zcr));
                 }
-                
+
                 // Start recording if we hit the minimum speech threshold and aren't already recording
                 if above_ms >= min_speech_ms && !is_recording_voice {
                     is_recording_voice = true;
                     log_to_file(&format!("Started recording voice after {}ms of speech", above_ms));
                     let _ = app_events.emit("vad-segment-start", "");
-                    
+
                     // Write pre-roll buffer to the continuous file
                     if let Some(w) = session_writer_cb.lock().unwrap().as_mut() {
+                        log_to_file(&format!("Writing pre-roll buffer with {} samples", prebuf.len()));
                         for &s in prebuf.iter() { let _ = w.write_sample(s); }
                     }
                 }
-                
+
                 // Write current audio to file if we're recording voice
                 if is_recording_voice {
                     if let Some(w) = session_writer_cb.lock().unwrap().as_mut() {
                         for &s in as_i16 { let _ = w.write_sample(s); }
                     }
                 }
-                
+
                 below_ms = 0; // Reset silence counter
-            } else { 
+            } else {
                 if above_ms > 0 { // Log when voice detection stops
                     log_to_file(&format!("Voice detection stopped at {}ms (smoothed={:.3}, peak={:.3}, threshold={:.3}, zcr={:.1}, cooldown={}ms)", above_ms, smoothed, peak, threshold_eff, zcr, cooldown_left_ms));
                 }
-                above_ms = 0; 
-                
+                above_ms = 0;
+
                 // If we're currently recording voice, count silence
                 if is_recording_voice {
                     below_ms += chunk_ms as u32;
-                    
+
                     // Continue writing even during silence (to maintain continuity)
                     if let Some(w) = session_writer_cb.lock().unwrap().as_mut() {
                         for &s in as_i16 { let _ = w.write_sample(s); }
                     }
-                    
+
                     // Stop recording after enough silence
                     if below_ms >= silence_ms {
                         is_recording_voice = false;
@@ -637,13 +650,23 @@ fn arm_auto_recording(
         // Wait for disarm
         let _ = rx.recv();
         drop(stream);
-        
+
         // Finalize the continuous session file
         {
-            if let Some(w) = session_writer.lock().unwrap().take() { 
-                let _ = w.finalize(); 
-                log_to_file("Finalized continuous recording session");
-                let _ = app_for_thread.emit("vad-segment-saved", session_path.to_string_lossy().to_string()); 
+            if let Some(w) = session_writer.lock().unwrap().take() {
+                log_to_file(&format!("Finalizing continuous recording session: {}", session_path.to_string_lossy()));
+                match w.finalize() {
+                    Ok(_) => {
+                        log_to_file("Successfully finalized continuous recording session");
+                        let _ = app_for_thread.emit("vad-segment-saved", session_path.to_string_lossy().to_string());
+                    }
+                    Err(e) => {
+                        log_to_file(&format!("Error finalizing continuous recording session: {:?}", e));
+                        let _ = app_for_thread.emit("vad-error", format!("Failed to finalize recording: {:?}", e));
+                    }
+                }
+            } else {
+                log_to_file("No writer to finalize in continuous recording session");
             };
         }
     });
@@ -772,6 +795,7 @@ fn build_stream_u16(
         .build_input_stream(config, data_fn, err_fn, None)
         .map_err(|e| format!("Build stream failed: {e}"))
 }
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
