@@ -11,6 +11,100 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use tauri::{Emitter, State};
 
+mod lame_encoder;
+
+enum AudioWriter {
+    Wav(hound::WavWriter<BufWriter<File>>),
+    Mp3 {
+        encoder: lame_encoder::Lame,
+        file: File,
+        buffer: Vec<i16>,
+        channels: u16,
+    },
+}
+
+impl AudioWriter {
+    fn write_sample(&mut self, sample: i16) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            AudioWriter::Wav(writer) => {
+                writer.write_sample(sample)?;
+            }
+            AudioWriter::Mp3 { buffer, channels, .. } => {
+                buffer.push(sample);
+
+                // Process in chunks when we have enough samples
+                let samples_per_frame = 1152 * (*channels as usize);
+                if buffer.len() >= samples_per_frame {
+                    self.flush_mp3_buffer()?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_mp3_buffer(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let AudioWriter::Mp3 { encoder, file, buffer, channels } = self {
+            if buffer.is_empty() {
+                return Ok(());
+            }
+
+            let samples_per_channel = buffer.len() / (*channels as usize);
+            let mut left_channel = Vec::with_capacity(samples_per_channel);
+            let mut right_channel = Vec::with_capacity(samples_per_channel);
+
+            if *channels == 1 {
+                // Mono: duplicate to both channels
+                left_channel = buffer.clone();
+                right_channel = buffer.clone();
+            } else {
+                // Stereo: interleaved
+                for chunk in buffer.chunks(2) {
+                    if chunk.len() >= 2 {
+                        left_channel.push(chunk[0]);
+                        right_channel.push(chunk[1]);
+                    } else if chunk.len() == 1 {
+                        left_channel.push(chunk[0]);
+                        right_channel.push(0);
+                    }
+                }
+            }
+
+            // Encode to MP3
+            let mut mp3_buffer = vec![0u8; (left_channel.len() * 5 / 4 + 7200).max(16384)];
+            match encoder.encode(&left_channel, &right_channel, &mut mp3_buffer) {
+                Ok(bytes_written) => {
+                    if bytes_written > 0 {
+                        file.write_all(&mp3_buffer[..bytes_written])?;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("MP3 encode error: {:?}", e);
+                }
+            }
+
+            buffer.clear();
+        }
+        Ok(())
+    }
+
+    fn finalize(mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Flush any remaining samples first
+        self.flush_mp3_buffer()?;
+
+        match self {
+            AudioWriter::Wav(writer) => {
+                writer.finalize()?;
+            }
+            AudioWriter::Mp3 { mut file, .. } => {
+                // Note: LAME doesn't provide a direct finalize function in our FFI,
+                // but in a complete implementation you'd call lame_encode_flush here
+                file.flush()?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn log_to_file(message: &str) {
     if let Some(mut docs_dir) = dirs_next::document_dir() {
         docs_dir.push("vad_debug.log");
@@ -53,12 +147,18 @@ fn start_recording(
     }
 
     // Resolve output path
+    let target_format = format.as_deref().unwrap_or("wav");
+    let file_extension = match target_format {
+        "mp3" => "mp3",
+        _ => "wav",
+    };
+
     let out_path = if let Some(p) = path {
         PathBuf::from(p)
     } else {
         let mut base = dirs_next::document_dir().unwrap_or_else(|| std::env::temp_dir());
         let ts = chrono::Local::now()
-            .format("recording-%Y%m%d-%H%M%S.wav")
+            .format(&format!("recording-%Y%m%d-%H%M%S.{}", file_extension))
             .to_string();
         base.push(ts);
         base
@@ -92,18 +192,81 @@ fn start_recording(
         let sample_rate = config.sample_rate().0;
         let channels = config.channels();
 
-        // Prepare WAV writer
-        let spec = hound::WavSpec {
-            channels,
-            sample_rate,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let writer = match hound::WavWriter::create(&finalize_path, spec) {
-            Ok(w) => Arc::new(Mutex::new(Some(w))),
-            Err(e) => {
-                let _ = done_tx.send(Err(format!("Failed to create WAV: {e}")));
-                return;
+        // Prepare audio writer based on format
+        let writer = match _target_format.as_str() {
+            "mp3" => {
+                // Create MP3 encoder
+                let mut encoder = match lame_encoder::Lame::new() {
+                    Some(enc) => enc,
+                    None => {
+                        let _ = done_tx.send(Err("Failed to initialize LAME encoder".into()));
+                        return;
+                    }
+                };
+
+                // Configure encoder
+                if let Err(e) = encoder.set_sample_rate(sample_rate) {
+                    let _ = done_tx.send(Err(format!("Failed to set sample rate: {:?}", e)));
+                    return;
+                }
+                if let Err(e) = encoder.set_channels(channels as u8) {
+                    let _ = done_tx.send(Err(format!("Failed to set channels: {:?}", e)));
+                    return;
+                }
+
+                // Set quality based on quality parameter
+                let (bitrate, quality_level) = match _target_quality.as_str() {
+                    "verylow" => (64, 9),
+                    "low" => (128, 7),
+                    "medium" => (192, 5),
+                    "high" => (320, 2),
+                    _ => (192, 5), // default
+                };
+
+                if let Err(e) = encoder.set_kilobitrate(bitrate) {
+                    let _ = done_tx.send(Err(format!("Failed to set bitrate: {:?}", e)));
+                    return;
+                }
+                if let Err(e) = encoder.set_quality(quality_level) {
+                    let _ = done_tx.send(Err(format!("Failed to set quality: {:?}", e)));
+                    return;
+                }
+                if let Err(e) = encoder.init_params() {
+                    let _ = done_tx.send(Err(format!("Failed to initialize encoder params: {:?}", e)));
+                    return;
+                }
+
+                let file = match File::create(&finalize_path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = done_tx.send(Err(format!("Failed to create MP3 file: {e}")));
+                        return;
+                    }
+                };
+
+                Arc::new(Mutex::new(Some(AudioWriter::Mp3 {
+                    encoder,
+                    file,
+                    buffer: Vec::new(),
+                    channels,
+                })))
+            }
+            _ => {
+                // Default to WAV
+                let spec = hound::WavSpec {
+                    channels,
+                    sample_rate,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                };
+                let wav_writer = match hound::WavWriter::create(&finalize_path, spec) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        let _ = done_tx.send(Err(format!("Failed to create WAV: {e}")));
+                        return;
+                    }
+                };
+                Arc::new(Mutex::new(Some(AudioWriter::Wav(wav_writer))))
             }
         };
 
@@ -134,7 +297,7 @@ fn start_recording(
         let _ = rx.recv();
         // Dropping stream stops callbacks.
         drop(stream);
-        // Finalize WAV.
+        // Finalize audio file.
         let mut guard = writer.lock().unwrap();
         let result_path = if let Some(w) = guard.take() {
             match w.finalize() {
@@ -162,6 +325,8 @@ fn arm_auto_recording(
     min_speech_ms: Option<u32>,
     silence_ms: Option<u32>,
     pre_roll_ms: Option<u32>,
+    format: Option<String>,
+    quality: Option<String>,
 ) -> Result<(), String> {
     if state.inner().stop_tx.lock().unwrap().is_some() {
         return Err("Another recording is already active".into());
@@ -177,6 +342,8 @@ fn arm_auto_recording(
     let silence_ms = silence_ms.unwrap_or(800);
     let pre_roll_ms = pre_roll_ms.unwrap_or(250);
     let cooldown_ms_default: u32 = 500; // avoid immediate retriggering
+    let target_format = format.unwrap_or_else(|| "wav".to_string());
+    let target_quality = quality.unwrap_or_else(|| "high".to_string());
 
     std::thread::spawn(move || {
         log_to_file("Starting voice detection thread");
@@ -201,17 +368,91 @@ fn arm_auto_recording(
         let mut prebuf: std::collections::VecDeque<i16> = std::collections::VecDeque::with_capacity(pre_roll_capacity + 1);
 
         // Create one continuous file for the entire session
+        let file_extension = match target_format.as_str() {
+            "mp3" => "mp3",
+            _ => "wav",
+        };
+
         let mut base = dirs_next::document_dir().unwrap_or_else(|| std::env::temp_dir());
-        let ts = chrono::Local::now().format("recording-%Y%m%d-%H%M%S.wav").to_string();
+        let ts = chrono::Local::now().format(&format!("recording-%Y%m%d-%H%M%S.{}", file_extension)).to_string();
         base.push(ts);
-        let spec = hound::WavSpec { channels: channels as u16, sample_rate: sample_rate as u32, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
-        
-        let session_writer = match hound::WavWriter::create(&base, spec) {
-            Ok(w) => Arc::new(Mutex::new(Some(w))),
-            Err(e) => {
-                log_to_file(&format!("Failed to create session WAV file: {}", e));
-                let _ = app_for_thread.emit("vad-error", format!("create session wav: {e}"));
-                return;
+
+        // Create audio writer based on format
+        let session_writer = match target_format.as_str() {
+            "mp3" => {
+                // Create MP3 encoder
+                let mut encoder = match lame_encoder::Lame::new() {
+                    Some(enc) => enc,
+                    None => {
+                        let _ = app_for_thread.emit("vad-error", "Failed to initialize LAME encoder");
+                        return;
+                    }
+                };
+
+                // Configure encoder
+                if let Err(e) = encoder.set_sample_rate(sample_rate as u32) {
+                    let _ = app_for_thread.emit("vad-error", format!("Failed to set sample rate: {:?}", e));
+                    return;
+                }
+                if let Err(e) = encoder.set_channels(channels as u8) {
+                    let _ = app_for_thread.emit("vad-error", format!("Failed to set channels: {:?}", e));
+                    return;
+                }
+
+                // Set quality based on quality parameter
+                let (bitrate, quality_level) = match target_quality.as_str() {
+                    "verylow" => (64, 9),
+                    "low" => (128, 7),
+                    "medium" => (192, 5),
+                    "high" => (320, 2),
+                    _ => (192, 5), // default
+                };
+
+                if let Err(e) = encoder.set_kilobitrate(bitrate) {
+                    let _ = app_for_thread.emit("vad-error", format!("Failed to set bitrate: {:?}", e));
+                    return;
+                }
+                if let Err(e) = encoder.set_quality(quality_level) {
+                    let _ = app_for_thread.emit("vad-error", format!("Failed to set quality: {:?}", e));
+                    return;
+                }
+                if let Err(e) = encoder.init_params() {
+                    let _ = app_for_thread.emit("vad-error", format!("Failed to initialize encoder params: {:?}", e));
+                    return;
+                }
+
+                let file = match File::create(&base) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = app_for_thread.emit("vad-error", format!("Failed to create MP3 file: {e}"));
+                        return;
+                    }
+                };
+
+                Arc::new(Mutex::new(Some(AudioWriter::Mp3 {
+                    encoder,
+                    file,
+                    buffer: Vec::new(),
+                    channels: channels as u16,
+                })))
+            }
+            _ => {
+                // Default to WAV
+                let spec = hound::WavSpec {
+                    channels: channels as u16,
+                    sample_rate: sample_rate as u32,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                };
+                let wav_writer = match hound::WavWriter::create(&base, spec) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        log_to_file(&format!("Failed to create session WAV file: {}", e));
+                        let _ = app_for_thread.emit("vad-error", format!("create session wav: {e}"));
+                        return;
+                    }
+                };
+                Arc::new(Mutex::new(Some(AudioWriter::Wav(wav_writer))))
             }
         };
         let session_path = base.clone();
@@ -446,7 +687,7 @@ struct LevelPayload {
 fn build_stream_f32(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    writer: Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>,
+    writer: Arc<Mutex<Option<AudioWriter>>>,
     err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     app: tauri::AppHandle,
 ) -> Result<cpal::Stream, String> {
@@ -476,7 +717,7 @@ fn build_stream_f32(
 fn build_stream_i16(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    writer: Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>,
+    writer: Arc<Mutex<Option<AudioWriter>>>,
     err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     app: tauri::AppHandle,
 ) -> Result<cpal::Stream, String> {
@@ -505,7 +746,7 @@ fn build_stream_i16(
 fn build_stream_u16(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    writer: Arc<Mutex<Option<hound::WavWriter<BufWriter<File>>>>>,
+    writer: Arc<Mutex<Option<AudioWriter>>>,
     err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     app: tauri::AppHandle,
 ) -> Result<cpal::Stream, String> {

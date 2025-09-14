@@ -22,11 +22,16 @@ async function start() {
     if (autoDetectChk?.checked) {
       // Voice activation mode
       isVoiceMode = true;
+      const format = (formatSel?.value || "wav").toLowerCase();
+      const quality = (qualitySel?.value || "high").toLowerCase();
+
       await invoke("arm_auto_recording", {
         threshold: 0.01,     // Very low threshold for maximum sensitivity
         minSpeechMs: 100,    // Very short duration to trigger easily
         silenceMs: 1000,     // 1 second of silence to stop recording
         preRollMs: 250,      // 250ms pre-roll buffer
+        format,
+        quality,
       });
       statusEl.textContent = "Listening for voice…";
       btnStop.disabled = false;
