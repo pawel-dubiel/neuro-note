@@ -278,6 +278,96 @@ function updateUIForState(state: RecordingState) {
   }
 }
 
+// OpenAI analysis function
+let analyzing = false;
+async function analyzeWithOpenAI() {
+  if (analyzing || !openaiApiKeyInp?.value.trim() || !lastTranscript.trim()) {
+    return;
+  }
+
+  analyzing = true;
+
+  try {
+    // Update status indicator instead of AI analysis content
+    if (openaiStatusEl) {
+      openaiStatusEl.textContent = "Analyzing...";
+      openaiStatusEl.classList.remove("ready", "error");
+      openaiStatusEl.classList.add("analyzing");
+    }
+
+    const selectedModel = openaiModelSel?.value || "gpt-4.1";
+    const result = await invoke<string>("analyze_with_openai", {
+      transcript: lastTranscript,
+      apiKey: openaiApiKeyInp.value.trim(),
+      model: selectedModel
+    });
+
+    if (aiAnalysisEl) {
+      aiAnalysisEl.textContent = result;
+      aiAnalysisEl.scrollTop = aiAnalysisEl.scrollHeight;
+    }
+
+    if (openaiStatusEl) {
+      openaiStatusEl.textContent = "Ready";
+      openaiStatusEl.classList.remove("analyzing", "error");
+      openaiStatusEl.classList.add("ready");
+    }
+
+    console.log("✅ OpenAI analysis completed");
+  } catch (error) {
+    console.error("❌ OpenAI analysis error:", error);
+
+    if (openaiStatusEl) {
+      openaiStatusEl.textContent = "Error";
+      openaiStatusEl.classList.remove("analyzing", "ready");
+      openaiStatusEl.classList.add("error");
+    }
+
+    if (aiAnalysisEl) {
+      aiAnalysisEl.textContent = `Error: ${error}`;
+    }
+  } finally {
+    analyzing = false;
+  }
+}
+
+// Function to fetch and populate OpenAI models
+async function fetchOpenAIModels() {
+  if (!openaiApiKeyInp?.value.trim() || !openaiModelSel) {
+    return;
+  }
+
+  try {
+    const models = await invoke<string[]>("get_openai_models", {
+      apiKey: openaiApiKeyInp.value.trim()
+    });
+
+    // Clear existing options except the first default ones
+    const currentValue = openaiModelSel.value;
+    openaiModelSel.innerHTML = "";
+
+    // Add fetched models
+    models.forEach(model => {
+      const option = document.createElement("option");
+      option.value = model;
+      option.textContent = model;
+      openaiModelSel?.appendChild(option);
+    });
+
+    // Try to restore previous selection, or select first model
+    if (models.includes(currentValue)) {
+      openaiModelSel.value = currentValue;
+    } else if (models.length > 0) {
+      openaiModelSel.value = models[0];
+    }
+
+    console.log(`✅ Loaded ${models.length} OpenAI models`);
+  } catch (error) {
+    console.error("❌ Failed to fetch OpenAI models:", error);
+    // Keep default options if fetching fails
+  }
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   btnStart = document.querySelector("#btn-start");
   btnPause = document.querySelector("#btn-pause");
@@ -292,11 +382,34 @@ window.addEventListener("DOMContentLoaded", () => {
   sonioxApiKeyInp = document.querySelector("#soniox-api");
   sonioxEnableChk = document.querySelector("#soniox-enable");
   sonioxStatusEl = document.querySelector("#soniox-status");
+  openaiApiKeyInp = document.querySelector("#openai-api");
+  openaiModelSel = document.querySelector("#openai-model");
+  openaiEnableChk = document.querySelector("#openai-enable");
+  openaiStatusEl = document.querySelector("#openai-status");
+  aiAnalysisEl = document.querySelector("#ai-analysis");
 
   btnStart?.addEventListener("click", start);
   btnPause?.addEventListener("click", pause);
   btnResume?.addEventListener("click", resume);
   btnStop?.addEventListener("click", stop);
+
+  // OpenAI enable checkbox listener
+  openaiEnableChk?.addEventListener("change", () => {
+    if (openaiEnableChk?.checked && lastTranscript.trim().length > 20) {
+      analyzeWithOpenAI();
+    }
+  });
+
+  // OpenAI API key input listener - fetch models when key is pasted/entered
+  openaiApiKeyInp?.addEventListener("input", () => {
+    // Debounce the API call
+    clearTimeout((window as any).openaiModelTimeout);
+    (window as any).openaiModelTimeout = setTimeout(() => {
+      if (openaiApiKeyInp?.value.trim().length) {
+        fetchOpenAIModels();
+      }
+    }, 1000);
+  });
 
   // No special disabling; pause/resume supported for both modes now
 
@@ -369,6 +482,14 @@ window.addEventListener("DOMContentLoaded", () => {
       console.log("✅ Updated transcript element with:", event.payload);
     } else {
       console.error("❌ Transcript element not found!");
+    }
+
+    // Store transcript for OpenAI analysis
+    lastTranscript = event.payload;
+
+    // Trigger OpenAI analysis if enabled and we have substantial content
+    if (openaiEnableChk?.checked && lastTranscript.trim().length > 50) {
+      analyzeWithOpenAI();
     }
 
     if (sonioxEnableChk?.checked && sonioxStatusEl && !sonioxConnected) {
