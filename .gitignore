@@ -24,6 +24,9 @@ src-tauri/target/
 src-tauri/Cargo.lock
 src-tauri/gen/
 
+# Local config
+config/soniox.local.json
+
 # Build artifacts
 *.app
 *.dmg

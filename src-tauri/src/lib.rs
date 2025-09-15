@@ -14,6 +14,9 @@ use tauri::{Emitter, State};
 
 mod utils;
 mod audio;
+mod soniox;
+#[cfg(test)]
+mod soniox_test;
 pub use audio::AudioWriter;
 use crate::utils::log_to_file;
 
@@ -99,6 +102,8 @@ struct AppState {
     writer_state: Arc<Mutex<Option<AudioWriter>>>,
     vad_session_path: Arc<Mutex<Option<PathBuf>>>,
     is_writing_enabled: Arc<Mutex<bool>>, // Controls whether samples are written during pause
+    // Soniox real-time transcription session (optional)
+    soniox_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<soniox::AudioChunk>>>>,
 }
 
 impl Default for AppState {
@@ -112,6 +117,7 @@ impl Default for AppState {
             writer_state: Arc::new(Mutex::new(None)),
             vad_session_path: Arc::new(Mutex::new(None)),
             is_writing_enabled: Arc::new(Mutex::new(false)),
+            soniox_tx: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -892,6 +898,44 @@ fn get_recording_state(state: State<AppState>) -> Result<RecordingState, String>
     state.inner().get_current_state()
 }
 
+// Soniox Tauri commands
+#[tauri::command]
+fn start_soniox_session(app: tauri::AppHandle, state: State<AppState>, mut opts: soniox::SonioxOptions) -> Result<(), String> {
+    if state.inner().soniox_tx.lock().unwrap().is_some() {
+        return Err("Soniox session already running".into());
+    }
+    if opts.api_key.trim().is_empty() {
+        // Try environment variable
+        if let Ok(k) = std::env::var("SONIOX_API_KEY") { opts.api_key = k; }
+        // Try config file: config/soniox.local.json
+        if opts.api_key.trim().is_empty() {
+            let mut cfg_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            cfg_path.push("config/soniox.local.json");
+            if let Ok(txt) = std::fs::read_to_string(&cfg_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    if let Some(k) = json.get("api_key").and_then(|v| v.as_str()) {
+                        opts.api_key = k.to_string();
+                    }
+                }
+            }
+        }
+        if opts.api_key.trim().is_empty() {
+            return Err("Missing Soniox API key. Provide api_key, SONIOX_API_KEY env, or config/soniox.local.json".into());
+        }
+    }
+    log_to_file(&format!("Starting Soniox session with API key: {}...", &opts.api_key[..8]));
+    let handle = tauri::async_runtime::block_on(soniox::start_session(app, opts))?;
+    *state.inner().soniox_tx.lock().unwrap() = Some(handle.tx);
+    log_to_file("Soniox session started successfully");
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_soniox_session(state: State<AppState>) -> Result<(), String> {
+    *state.inner().soniox_tx.lock().unwrap() = None;
+    Ok(())
+}
+
 #[derive(Serialize, Clone)]
 struct LevelPayload {
     rms: f32,
@@ -906,6 +950,8 @@ fn build_stream_f32(
     app: tauri::AppHandle,
     app_state: Arc<AppState>,
 ) -> Result<cpal::Stream, String> {
+    let channels = config.channels;
+    let sample_rate = config.sample_rate.0;
     let data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f32;
@@ -935,6 +981,39 @@ fn build_stream_f32(
                 }
             }
         }
+
+        // Non-blocking feed to Soniox (if active)
+        if let Ok(lock) = app_state.soniox_tx.lock() {
+            if let Some(tx) = lock.as_ref() {
+                let chunk = soniox::AudioChunk {
+                    samples: data.iter().map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect(),
+                    channels,
+                    sample_rate,
+                };
+                match tx.try_send(chunk) {
+                    Ok(_) => {
+                        // Log every 1000 chunks (about once per second at 44kHz)
+                        static mut CHUNK_COUNT: u32 = 0;
+                        unsafe {
+                            CHUNK_COUNT += 1;
+                            if CHUNK_COUNT % 1000 == 0 {
+                                log_to_file(&format!("Soniox: Sent {} audio chunks", CHUNK_COUNT));
+                            }
+                        }
+                    },
+                    Err(_) => log_to_file("Soniox: Audio send buffer full"),
+                }
+            } else {
+                // Only log this once to avoid spam
+                static mut LOGGED_NO_TX: bool = false;
+                unsafe {
+                    if !LOGGED_NO_TX {
+                        log_to_file("Soniox: No active session (tx is None)");
+                        LOGGED_NO_TX = true;
+                    }
+                }
+            }
+        }
     };
 
     device
@@ -950,6 +1029,8 @@ fn build_stream_i16(
     app: tauri::AppHandle,
     app_state: Arc<AppState>,
 ) -> Result<cpal::Stream, String> {
+    let channels = config.channels;
+    let sample_rate = config.sample_rate.0;
     let data_fn = move |data: &[i16], _: &cpal::InputCallbackInfo| {
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f32;
@@ -975,6 +1056,16 @@ fn build_stream_i16(
                 }
             }
         }
+
+        if let Ok(lock) = app_state.soniox_tx.lock() {
+            if let Some(tx) = lock.as_ref() {
+                let _ = tx.try_send(soniox::AudioChunk {
+                    samples: data.to_vec(),
+                    channels,
+                    sample_rate,
+                });
+            }
+        }
     };
 
     device
@@ -990,6 +1081,8 @@ fn build_stream_u16(
     app: tauri::AppHandle,
     app_state: Arc<AppState>,
 ) -> Result<cpal::Stream, String> {
+    let channels = config.channels;
+    let sample_rate = config.sample_rate.0;
     let data_fn = move |data: &[u16], _: &cpal::InputCallbackInfo| {
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f32;
@@ -1016,6 +1109,16 @@ fn build_stream_u16(
                 }
             }
         }
+
+        if let Ok(lock) = app_state.soniox_tx.lock() {
+            if let Some(tx) = lock.as_ref() {
+                let _ = tx.try_send(soniox::AudioChunk {
+                    samples: data.iter().map(|&u| (u as i32 - 32768) as i16).collect(),
+                    channels,
+                    sample_rate,
+                });
+            }
+        }
     };
 
     device
@@ -1038,7 +1141,9 @@ pub fn run() {
             finalize_auto_recording,
             pause_recording,
             resume_recording,
-            get_recording_state
+            get_recording_state,
+            start_soniox_session,
+            stop_soniox_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

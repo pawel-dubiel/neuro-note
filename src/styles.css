@@ -49,7 +49,7 @@
   display: flex;
   gap: 12px;
   align-items: center;
-}
+  }
 .selects label {
   display: flex;
   gap: 6px;
@@ -57,6 +57,21 @@
   font-size: 0.9rem;
   color: #444;
 }
+.selects .soniox-key input {
+  width: 220px;
+}
+.soniox-status {
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid #ddd;
+  background: #fafafa;
+  color: #666;
+}
+.soniox-status.connecting { color: #8a6d3b; border-color: #f0ad4e; background: #fcf8e3; }
+.soniox-status.connected { color: #3c763d; border-color: #d6e9c6; background: #dff0d8; }
+.soniox-status.error { color: #a94442; border-color: #ebccd1; background: #f2dede; }
+.soniox-status.off { color: #666; border-color: #ddd; background: #fafafa; }
 select {
   padding: 0.4em 0.6em;
   border-radius: 8px;
