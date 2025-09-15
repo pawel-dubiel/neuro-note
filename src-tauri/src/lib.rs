@@ -977,11 +977,39 @@ async fn analyze_with_openai(transcript: String, api_key: String, model: Option<
     let opts = openai::OpenAIOptions {
         api_key,
         model: model.unwrap_or_else(|| "gpt-4.1".to_string()),
+        system_prompt: "You are an AI assistant that analyzes conversations and answers questions in the language that conversation is going on".to_string(),
     };
 
     openai::analyze_conversation(opts, transcript).await
 }
 
+#[derive(serde::Serialize)]
+struct GateDecision {
+    run: bool,
+    reason: Option<String>,
+    confidence: Option<f32>,
+}
+
+#[tauri::command]
+async fn should_run_analysis_gate(
+    api_key: String,
+    model: Option<String>,
+    main_system_prompt: Option<String>,
+    current_transcript: String,
+    previous_transcript: String,
+    last_output: Option<String>,
+) -> Result<GateDecision, String> {
+    if api_key.is_empty() {
+        return Err("OpenAI API key is required".to_string());
+    }
+    let opts = openai::GateOptions {
+        api_key,
+        model: model.unwrap_or_else(|| "gpt-4.1-nano".to_string()),
+        main_system_prompt: main_system_prompt.unwrap_or_else(|| "You are an AI assistant that analyzes conversations and answers questions in the language that conversation is going on".to_string()),
+    };
+    let g = openai::should_run_gate(opts, current_transcript, previous_transcript, last_output).await?;
+    Ok(GateDecision { run: g.run, reason: g.reason, confidence: g.confidence })
+}
 #[tauri::command]
 async fn get_openai_models(api_key: String) -> Result<Vec<String>, String> {
     openai::get_available_models(api_key).await
@@ -1179,7 +1207,8 @@ pub fn run() {
             start_soniox_session,
             stop_soniox_session,
             analyze_with_openai,
-            get_openai_models
+            get_openai_models,
+            should_run_analysis_gate
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
