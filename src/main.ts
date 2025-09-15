@@ -368,6 +368,54 @@ async function fetchOpenAIModels() {
   }
 }
 
+// Panel toggle functionality
+function setupPanelToggles() {
+  const transcriptToggle = document.querySelector("#toggle-transcript");
+  const aiToggle = document.querySelector("#toggle-ai");
+  const transcriptPanel = document.querySelector("#transcript-panel");
+  const aiPanel = document.querySelector("#ai-panel");
+
+  // Initially show transcript panel, hide AI panel
+  transcriptPanel?.classList.remove("hidden");
+  aiPanel?.classList.add("hidden");
+
+  transcriptToggle?.addEventListener("click", () => {
+    const isHidden = transcriptPanel?.classList.contains("hidden");
+    if (isHidden) {
+      transcriptPanel?.classList.remove("hidden");
+      transcriptToggle.classList.add("active");
+    } else {
+      transcriptPanel?.classList.add("hidden");
+      transcriptToggle.classList.remove("active");
+    }
+  });
+
+  aiToggle?.addEventListener("click", () => {
+    const isHidden = aiPanel?.classList.contains("hidden");
+    if (isHidden) {
+      aiPanel?.classList.remove("hidden");
+      aiToggle.classList.add("active");
+    } else {
+      aiPanel?.classList.add("hidden");
+      aiToggle.classList.remove("active");
+    }
+  });
+
+  // Panel close buttons
+  document.querySelectorAll(".panel-close").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const panelType = btn.getAttribute("data-panel");
+      if (panelType === "transcript") {
+        transcriptPanel?.classList.add("hidden");
+        transcriptToggle?.classList.remove("active");
+      } else if (panelType === "ai") {
+        aiPanel?.classList.add("hidden");
+        aiToggle?.classList.remove("active");
+      }
+    });
+  });
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   btnStart = document.querySelector("#btn-start");
   btnPause = document.querySelector("#btn-pause");
@@ -387,6 +435,9 @@ window.addEventListener("DOMContentLoaded", () => {
   openaiEnableChk = document.querySelector("#openai-enable");
   openaiStatusEl = document.querySelector("#openai-status");
   aiAnalysisEl = document.querySelector("#ai-analysis");
+
+  // Panel toggle functionality
+  setupPanelToggles();
 
   btnStart?.addEventListener("click", start);
   btnPause?.addEventListener("click", pause);
