@@ -22,6 +22,10 @@ let openaiEnableChk: HTMLInputElement | null;
 let openaiStatusEl: HTMLElement | null;
 let aiAnalysisEl: HTMLElement | null;
 let lastTranscript = "";
+let lastAnalyzedStable = "";
+let lastAnalysisAt = 0;
+let gateCountEl: HTMLElement | null;
+let gateRuns = 0;
 let currentStateType: RecordingState["type"] = "Idle";
 let currentPath: string | null = null;
 let isVoiceMode = false;
@@ -280,8 +284,9 @@ function updateUIForState(state: RecordingState) {
 
 // OpenAI analysis function
 let analyzing = false;
-async function analyzeWithOpenAI() {
-  if (analyzing || !openaiApiKeyInp?.value.trim() || !lastTranscript.trim()) {
+async function analyzeWithOpenAI(transcriptOverride?: string) {
+  const transcriptToAnalyze = (transcriptOverride ?? lastTranscript).trim();
+  if (analyzing || !openaiApiKeyInp?.value.trim() || !transcriptToAnalyze) {
     return;
   }
 
@@ -297,7 +302,7 @@ async function analyzeWithOpenAI() {
 
     const selectedModel = openaiModelSel?.value || "gpt-4.1";
     const result = await invoke<string>("analyze_with_openai", {
-      transcript: lastTranscript,
+      transcript: transcriptToAnalyze,
       apiKey: openaiApiKeyInp.value.trim(),
       model: selectedModel
     });
@@ -335,6 +340,23 @@ async function analyzeWithOpenAI() {
   } finally {
     analyzing = false;
   }
+}
+
+// Heuristic gating helpers
+const MIN_ANALYSIS_INTERVAL_MS = 4000; // throttle expensive calls
+const MIN_NEW_CHARS = 30;              // require meaningful delta
+
+function stripTentative(text: string): string {
+  // Remove segments formatted as tentative (rendered with underscores)
+  // Keep it conservative to avoid over-removal
+  return text.replace(/_+[^_]*_+/g, "");
+}
+
+function isStable(text: string): boolean {
+  // Consider stable if it ends with sentence punctuation and has no visible tentative segment
+  const ends = /[.!?)]\s*$/.test(text.trim());
+  const hasTentative = /_+[^_]*_+/.test(text);
+  return ends && !hasTentative;
 }
 
 // Function to fetch and populate OpenAI models
@@ -530,6 +552,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Soniox transcript events
   const transcriptEl = document.getElementById("transcript");
+  gateCountEl = document.getElementById("gate-count");
   listen<string>("soniox-transcript", (event) => {
     console.log("📝 Received soniox-transcript event:", event.payload);
 
@@ -550,9 +573,49 @@ window.addEventListener("DOMContentLoaded", () => {
     // Store transcript for OpenAI analysis
     lastTranscript = event.payload;
 
-    // Trigger OpenAI analysis if enabled and we have substantial content
-    if (openaiEnableChk?.checked && lastTranscript.trim().length > 50) {
-      analyzeWithOpenAI();
+    // Heuristic gating: only analyze when transcript is stable and meaningfully changed
+    if (openaiEnableChk?.checked) {
+      const stable = stripTentative(lastTranscript).trim();
+      const now = Date.now();
+      const delta = stable.length - lastAnalyzedStable.length;
+
+      const prevStable = lastAnalyzedStable;
+      if (
+        stable.length > 50 &&
+        isStable(stable) &&
+        delta >= MIN_NEW_CHARS &&
+        now - lastAnalysisAt >= MIN_ANALYSIS_INTERVAL_MS &&
+        !analyzing
+      ) {
+        console.log(`🔎 Running gated analysis (len=${stable.length}, Δ=${delta})`);
+
+        // Run the lightweight gate for observability only (does not block or decide)
+        if (openaiApiKeyInp?.value.trim()) {
+          const key = openaiApiKeyInp.value.trim();
+          const model = 'gpt-4.1-nano';
+          const lastOut = aiAnalysisEl?.textContent || '';
+          // Fire and forget; update counter when done
+          invoke<any>("should_run_analysis_gate", {
+            apiKey: key,
+            model,
+            currentTranscript: stable,
+            previousTranscript: prevStable,
+            lastOutput: lastOut,
+          }).then((res) => {
+            gateRuns += 1;
+            if (gateCountEl) gateCountEl.textContent = `Gate: ${gateRuns}`;
+            console.log("Gate decision:", res);
+          }).catch((err) => {
+            gateRuns += 1; // still count attempted runs
+            if (gateCountEl) gateCountEl.textContent = `Gate: ${gateRuns}`;
+            console.warn("Gate error:", err);
+          });
+        }
+
+        lastAnalyzedStable = stable;
+        lastAnalysisAt = now;
+        analyzeWithOpenAI(stable);
+      }
     }
 
     if (sonioxEnableChk?.checked && sonioxStatusEl && !sonioxConnected) {
