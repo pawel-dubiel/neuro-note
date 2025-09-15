@@ -104,6 +104,10 @@ struct AppState {
     is_writing_enabled: Arc<Mutex<bool>>, // Controls whether samples are written during pause
     // Soniox real-time transcription session (optional)
     soniox_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<soniox::AudioChunk>>>>,
+    // Track if we're in voice detection mode vs manual recording mode
+    is_voice_detection_mode: Arc<Mutex<bool>>,
+    // Track if voice is currently being detected (only used in voice detection mode)
+    voice_currently_detected: Arc<Mutex<bool>>,
 }
 
 impl Default for AppState {
@@ -118,6 +122,8 @@ impl Default for AppState {
             vad_session_path: Arc::new(Mutex::new(None)),
             is_writing_enabled: Arc::new(Mutex::new(false)),
             soniox_tx: Arc::new(Mutex::new(None)),
+            is_voice_detection_mode: Arc::new(Mutex::new(false)),
+            voice_currently_detected: Arc::new(Mutex::new(false)),
         }
     }
 }
@@ -330,6 +336,9 @@ fn start_recording(
     if current_state != RecordingState::Idle {
         return Err(format!("Recording already in progress: {:?}", current_state));
     }
+
+    // Mark that we're in manual recording mode (not voice detection)
+    *state.inner().is_voice_detection_mode.lock().unwrap() = false;
 
     // Resolve output path
     let target_format = format.as_deref().unwrap_or("wav");
@@ -551,6 +560,9 @@ fn arm_auto_recording(
     *state.inner().stop_tx.lock().unwrap() = Some(tx);
     *state.inner().done_rx.lock().unwrap() = None;
 
+    // Mark that we're in voice detection mode
+    *state.inner().is_voice_detection_mode.lock().unwrap() = true;
+
     let app_for_thread = app.clone();
     let threshold = threshold.unwrap_or(0.03);
     let min_speech_ms = min_speech_ms.unwrap_or(300);
@@ -720,6 +732,8 @@ fn arm_auto_recording(
                 // Start recording if we hit the minimum speech threshold and aren't already recording
                 if above_ms >= min_speech_ms && !is_recording_voice {
                     is_recording_voice = true;
+                    // Update global state for Soniox
+                    *state_for_thread.voice_currently_detected.lock().unwrap() = true;
                     log_to_file(&format!("Started recording voice after {}ms of speech", above_ms));
                     let _ = app_events.emit("vad-segment-start", "");
 
@@ -756,10 +770,24 @@ fn arm_auto_recording(
                     // Stop recording after enough silence
                     if below_ms >= silence_ms {
                         is_recording_voice = false;
+                        // Update global state for Soniox
+                        *state_for_thread.voice_currently_detected.lock().unwrap() = false;
                         below_ms = 0;
                         cooldown_left_ms = cooldown_ms_default;
                         log_to_file(&format!("Stopped recording after {}ms of silence", silence_ms));
                     }
+                }
+            }
+
+            // Always send audio to Soniox for better context
+            // Voice detection filtering will happen at the transcript display level
+            if let Ok(lock) = state_for_thread.soniox_tx.lock() {
+                if let Some(tx) = lock.as_ref() {
+                    let _ = tx.try_send(soniox::AudioChunk {
+                        samples: as_i16.to_vec(),
+                        channels: channels as u16,
+                        sample_rate: sample_rate as u32,
+                    });
                 }
             }
         };
@@ -815,6 +843,9 @@ fn arm_auto_recording(
 #[tauri::command]
 fn disarm_auto_recording(state: State<AppState>) -> Result<(), String> {
     if let Some(tx) = state.inner().stop_tx.lock().unwrap().take() {
+        // Reset voice detection state
+        *state.inner().is_voice_detection_mode.lock().unwrap() = false;
+        *state.inner().voice_currently_detected.lock().unwrap() = false;
         let _ = tx.send(());
         Ok(())
     } else {
@@ -982,36 +1013,15 @@ fn build_stream_f32(
             }
         }
 
-        // Non-blocking feed to Soniox (if active)
+        // Always send audio to Soniox for better context
+        // Voice detection filtering will happen at the transcript display level
         if let Ok(lock) = app_state.soniox_tx.lock() {
             if let Some(tx) = lock.as_ref() {
-                let chunk = soniox::AudioChunk {
+                let _ = tx.try_send(soniox::AudioChunk {
                     samples: data.iter().map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect(),
                     channels,
                     sample_rate,
-                };
-                match tx.try_send(chunk) {
-                    Ok(_) => {
-                        // Log every 1000 chunks (about once per second at 44kHz)
-                        static mut CHUNK_COUNT: u32 = 0;
-                        unsafe {
-                            CHUNK_COUNT += 1;
-                            if CHUNK_COUNT % 1000 == 0 {
-                                log_to_file(&format!("Soniox: Sent {} audio chunks", CHUNK_COUNT));
-                            }
-                        }
-                    },
-                    Err(_) => log_to_file("Soniox: Audio send buffer full"),
-                }
-            } else {
-                // Only log this once to avoid spam
-                static mut LOGGED_NO_TX: bool = false;
-                unsafe {
-                    if !LOGGED_NO_TX {
-                        log_to_file("Soniox: No active session (tx is None)");
-                        LOGGED_NO_TX = true;
-                    }
-                }
+                });
             }
         }
     };
@@ -1057,6 +1067,8 @@ fn build_stream_i16(
             }
         }
 
+        // Always send audio to Soniox for better context
+        // Voice detection filtering will happen at the transcript display level
         if let Ok(lock) = app_state.soniox_tx.lock() {
             if let Some(tx) = lock.as_ref() {
                 let _ = tx.try_send(soniox::AudioChunk {
@@ -1110,6 +1122,8 @@ fn build_stream_u16(
             }
         }
 
+        // Always send audio to Soniox for better context
+        // Voice detection filtering will happen at the transcript display level
         if let Ok(lock) = app_state.soniox_tx.lock() {
             if let Some(tx) = lock.as_ref() {
                 let _ = tx.try_send(soniox::AudioChunk {
