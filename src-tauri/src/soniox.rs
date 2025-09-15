@@ -194,44 +194,112 @@ pub async fn start_session(
 }
 
 pub fn render_tokens(final_tokens: &Vec<serde_json::Value>, non_final_tokens: &Vec<serde_json::Value>) -> String {
-  let mut parts: Vec<String> = Vec::new();
+  let mut result = String::new();
 
-  // Simple approach: just concatenate all text from final tokens
-  let mut final_text = String::new();
-  for token in final_tokens {
-    if let Some(text) = token.get("text").and_then(|t| t.as_str()) {
-      final_text.push_str(text);
+  // Process final tokens - these are confirmed transcriptions
+  if !final_tokens.is_empty() {
+    let mut final_text = String::new();
+    for token in final_tokens {
+      if let Some(text) = token.get("text").and_then(|t| t.as_str()) {
+        // Preserve original text spacing but clean unwanted tags
+        let clean_text = clean_transcript_text_preserve_spacing(text);
+        if !clean_text.trim().is_empty() {
+          final_text.push_str(&clean_text);
+        }
+      }
+    }
+
+    if !final_text.trim().is_empty() {
+      // Clean up and format the final text
+      let formatted_text = format_transcript_line(&final_text);
+      if !formatted_text.is_empty() {
+        result.push_str(&formatted_text);
+      }
     }
   }
 
-  // Add non-final tokens with different formatting to show real-time updates
-  let mut non_final_text = String::new();
-  for token in non_final_tokens {
-    if let Some(text) = token.get("text").and_then(|t| t.as_str()) {
-      non_final_text.push_str(text);
+  // Process non-final tokens - these are tentative/live transcriptions
+  if !non_final_tokens.is_empty() {
+    let mut non_final_text = String::new();
+    for token in non_final_tokens {
+      if let Some(text) = token.get("text").and_then(|t| t.as_str()) {
+        // Preserve original text spacing but clean unwanted tags
+        let clean_text = clean_transcript_text_preserve_spacing(text);
+        if !clean_text.trim().is_empty() {
+          non_final_text.push_str(&clean_text);
+        }
+      }
+    }
+
+    if !non_final_text.trim().is_empty() {
+      let formatted_text = format_transcript_line(&non_final_text);
+      if !formatted_text.is_empty() {
+        if !result.is_empty() {
+          result.push(' '); // Add space between final and tentative
+        }
+        // Add tentative text in italics-style formatting
+        result.push_str(&format!("_{}_", formatted_text));
+      }
     }
   }
 
-  // Build the display text
-  if !final_text.is_empty() {
-    parts.push(final_text);
+  result
+}
+
+// Clean up transcript text by removing technical tags but preserving original spacing
+fn clean_transcript_text_preserve_spacing(text: &str) -> String {
+  let mut cleaned = text.to_string();
+
+  // Remove common technical tags and markers
+  cleaned = cleaned.replace("<END>", "");
+  cleaned = cleaned.replace("<UNK>", "");
+  cleaned = cleaned.replace("<SIL>", "");
+  cleaned = cleaned.replace("<NOISE>", "");
+  cleaned = cleaned.replace("</s>", "");
+  cleaned = cleaned.replace("<s>", "");
+  cleaned = cleaned.replace("[NOISE]", "");
+  cleaned = cleaned.replace("[SILENCE]", "");
+  cleaned = cleaned.replace("[UNKNOWN]", "");
+
+  // Remove any remaining XML-style tags
+  let tag_regex = regex::Regex::new(r"<[^>]*>").unwrap_or_else(|_| regex::Regex::new("").unwrap());
+  cleaned = tag_regex.replace_all(&cleaned, "").to_string();
+
+  // Remove square bracket tags
+  let bracket_regex = regex::Regex::new(r"\[[^\]]*\]").unwrap_or_else(|_| regex::Regex::new("").unwrap());
+  cleaned = bracket_regex.replace_all(&cleaned, "").to_string();
+
+  cleaned
+}
+
+
+// Format a transcript line with proper capitalization and punctuation
+fn format_transcript_line(text: &str) -> String {
+  let trimmed = text.trim();
+  if trimmed.is_empty() {
+    return String::new();
   }
 
-  if !non_final_text.is_empty() {
-    if !parts.is_empty() {
-      parts.push(" ".to_string()); // Space between final and non-final
+  let mut formatted = trimmed.to_string();
+
+  // Capitalize first letter if it's not already - safe Unicode handling
+  if let Some(first_char) = formatted.chars().next() {
+    if first_char.is_lowercase() {
+      let mut chars: Vec<char> = formatted.chars().collect();
+      if !chars.is_empty() {
+        chars[0] = first_char.to_uppercase().next().unwrap_or(first_char);
+        formatted = chars.into_iter().collect();
+      }
     }
-    parts.push(format!("[{}]", non_final_text)); // Brackets to show this is tentative
   }
 
-  let result = parts.join("");
-
-  // If we have any content, add separator for clarity
-  if !result.is_empty() {
-    format!("{}\n---", result)
-  } else {
-    result
+  // Add period at the end if there's no punctuation
+  let last_char = formatted.chars().last().unwrap_or(' ');
+  if !matches!(last_char, '.' | '!' | '?' | ':' | ';' | ',') {
+    formatted.push('.');
   }
+
+  formatted
 }
 
 pub fn to_pcm16_mono_16k(samples: &[i16], channels: u16, sample_rate: u32) -> Vec<u8> {
