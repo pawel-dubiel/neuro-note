@@ -10,82 +10,134 @@
 
   <body>
     <div class="titlebar"></div>
-    <main class="container">
-      <h1>Voice Assistant</h1>
 
-      <section class="controls">
-        <div class="row" style="gap: 12px; align-items: center; flex-wrap: wrap;">
-          <button id="btn-start" class="btn primary" type="button">Start Recording</button>
-          <button id="btn-pause" class="btn" type="button" disabled>Pause</button>
-          <button id="btn-resume" class="btn" type="button" disabled style="display: none;">Resume</button>
-          <button id="btn-stop" class="btn" type="button" disabled>Stop Recording</button>
-          <div class="selects">
-          <label>
-            Format
-            <select id="format">
-              <option value="wav">WAV (lossless)</option>
-              <option value="mp3" selected>MP3 (compressed)</option>
-            </select>
-          </label>
-          <label>
-            Auto Detect
-            <input id="auto" type="checkbox" checked />
-          </label>
-          <label id="quality-wrap">
-            Quality
-            <select id="quality">
-              <option value="high">High (320 kbps)</option>
-              <option value="medium">Medium (192 kbps)</option>
-              <option value="low">Low (128 kbps)</option>
-              <option value="verylow" selected>Very Low (64 kbps)</option>
-              </select>
-            </label>
-            <label class="soniox-key">
-              Soniox API Key
-              <input id="soniox-api" type="password" placeholder="sk_live_..." autocomplete="off" />
-            </label>
-            <label>
-              Transcript
-              <input id="soniox-enable" type="checkbox" />
-            </label>
-            <span id="soniox-status" class="soniox-status off" title="Soniox connection status">Off</span>
-            <label class="openai-key">
-              OpenAI API Key
-              <input id="openai-api" type="password" placeholder="sk-..." autocomplete="off" />
-            </label>
-            <label>
-              Model
-              <select id="openai-model">
-                <option value="gpt-4.1">GPT-4.1</option>
-                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-              </select>
-            </label>
-            <label>
-              AI Analysis
-              <input id="openai-enable" type="checkbox" />
-            </label>
-            <span id="openai-status" class="openai-status" title="OpenAI analysis status">Ready</span>
+    <div class="app-layout">
+      <!-- Main Content Area -->
+      <main class="main-content">
+        <header class="app-header">
+          <h1>Voice Assistant</h1>
+          <div class="panel-toggles">
+            <button id="toggle-transcript" class="panel-toggle active" title="Toggle Transcript Panel">
+              <span>📝</span> Transcript
+            </button>
+            <button id="toggle-ai" class="panel-toggle" title="Toggle AI Panel">
+              <span>🤖</span> AI Analysis
+            </button>
           </div>
-          <span id="status" class="status">Idle</span>
-        </div>
-      </section>
-      <section class="meter-wrap">
-        <div class="label">Input Level</div>
-        <div id="meter" class="meter">
-          <div id="meter-fill" class="meter-fill"></div>
-        </div>
-      </section>
-      <p id="last-saved"></p>
+        </header>
 
-      <section class="transcript-wrap">
-        <div class="label">Transcript (live)</div>
-        <div id="transcript" class="transcript" aria-live="polite" aria-atomic="false"></div>
-      </section>
+        <!-- Control Section -->
+        <section class="controls-section">
+          <div class="control-group primary-controls">
+            <button id="btn-start" class="btn primary" type="button">Start Recording</button>
+            <button id="btn-pause" class="btn" type="button" disabled>Pause</button>
+            <button id="btn-resume" class="btn" type="button" disabled style="display: none;">Resume</button>
+            <button id="btn-stop" class="btn" type="button" disabled>Stop Recording</button>
+            <span id="status" class="status">Idle</span>
+          </div>
 
-      <section class="ai-analysis-wrap">
-        <div class="label">AI Analysis & Follow-up Questions</div>
-        <div id="ai-analysis" class="ai-analysis" aria-live="polite" aria-atomic="false"></div>
-      </section>
-    </main>
+          <div class="control-group settings-controls">
+            <div class="settings-row">
+              <label class="setting">
+                <span>Format</span>
+                <select id="format">
+                  <option value="wav">WAV (lossless)</option>
+                  <option value="mp3" selected>MP3 (compressed)</option>
+                </select>
+              </label>
+
+              <label class="setting checkbox-setting">
+                <input id="auto" type="checkbox" checked />
+                <span>Auto Detect</span>
+              </label>
+
+              <label class="setting" id="quality-wrap">
+                <span>Quality</span>
+                <select id="quality">
+                  <option value="high">High (320 kbps)</option>
+                  <option value="medium">Medium (192 kbps)</option>
+                  <option value="low">Low (128 kbps)</option>
+                  <option value="verylow" selected>Very Low (64 kbps)</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="settings-row">
+              <label class="setting api-key-setting">
+                <span>Soniox API Key</span>
+                <input id="soniox-api" type="password" placeholder="sk_live_..." autocomplete="off" />
+              </label>
+
+              <label class="setting checkbox-setting">
+                <input id="soniox-enable" type="checkbox" />
+                <span>Live Transcript</span>
+              </label>
+
+              <span id="soniox-status" class="status-indicator soniox-status off">Off</span>
+            </div>
+
+            <div class="settings-row">
+              <label class="setting api-key-setting">
+                <span>OpenAI API Key</span>
+                <input id="openai-api" type="password" placeholder="sk-..." autocomplete="off" />
+              </label>
+
+              <label class="setting">
+                <span>Model</span>
+                <select id="openai-model">
+                  <option value="gpt-4.1">GPT-4.1</option>
+                  <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                </select>
+              </label>
+
+              <label class="setting checkbox-setting">
+                <input id="openai-enable" type="checkbox" />
+                <span>AI Analysis</span>
+              </label>
+
+              <span id="openai-status" class="status-indicator openai-status ready">Ready</span>
+            </div>
+          </div>
+
+          <!-- Audio Level Meter -->
+          <div class="meter-section">
+            <div class="meter-label">Input Level</div>
+            <div class="meter-container">
+              <div id="meter" class="meter">
+                <div id="meter-fill" class="meter-fill"></div>
+              </div>
+            </div>
+          </div>
+
+          <p id="last-saved" class="last-saved"></p>
+        </section>
+      </main>
+
+      <!-- Left Panel: Transcript -->
+      <aside id="transcript-panel" class="side-panel left-panel">
+        <div class="panel-header">
+          <h3>Live Transcript</h3>
+          <button class="panel-close" data-panel="transcript">×</button>
+        </div>
+        <div class="panel-content">
+          <div id="transcript" class="transcript-content" aria-live="polite" aria-atomic="false">
+            <div class="placeholder">Start recording to see live transcript...</div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Right Panel: AI Analysis -->
+      <aside id="ai-panel" class="side-panel right-panel">
+        <div class="panel-header">
+          <h3>AI Analysis</h3>
+          <button class="panel-close" data-panel="ai">×</button>
+        </div>
+        <div class="panel-content">
+          <div id="ai-analysis" class="ai-analysis-content" aria-live="polite" aria-atomic="false">
+            <div class="placeholder">Enable AI analysis to see insights and follow-up questions...</div>
+          </div>
+        </div>
+      </aside>
+    </div>
   </body>
 </html>
