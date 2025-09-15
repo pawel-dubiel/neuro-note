@@ -14,6 +14,14 @@ let qualitySel: HTMLSelectElement | null;
 let autoDetectChk: HTMLInputElement | null;
 let currentPath: string | null = null;
 let isVoiceMode = false;
+let savedVoiceConfig: {
+  threshold: number;
+  minSpeechMs: number;
+  silenceMs: number;
+  preRollMs: number;
+  format: string;
+  quality: string;
+} | null = null;
 
 // Recording state management
 type RecordingState =
@@ -38,18 +46,19 @@ async function start() {
       const format = (formatSel?.value || "wav").toLowerCase();
       const quality = (qualitySel?.value || "high").toLowerCase();
 
-      await invoke("arm_auto_recording", {
-        threshold: 0.01,     // Very low threshold for maximum sensitivity
-        minSpeechMs: 100,    // Very short duration to trigger easily
-        silenceMs: 1000,     // 1 second of silence to stop recording
-        preRollMs: 250,      // 250ms pre-roll buffer
+      // Save config for resume
+      savedVoiceConfig = {
+        threshold: 0.01,
+        minSpeechMs: 100,
+        silenceMs: 1000,
+        preRollMs: 250,
         format,
         quality,
-      });
+      };
+
+      await invoke("arm_auto_recording", savedVoiceConfig);
       statusEl.textContent = "Listening for voice…";
-      // Note: Voice mode doesn't support pause/resume yet
       updateUIForState({ type: "Recording", data: { start_time: new Date().toISOString(), elapsed_ms: 0 } });
-      if (btnPause) btnPause.disabled = true; // Disable pause for voice mode
     } else {
       // Manual recording mode
       isVoiceMode = false;
@@ -80,11 +89,10 @@ async function pause() {
     statusEl.textContent = "Pausing…";
 
     if (isVoiceMode) {
-      // For voice mode, we'll need to implement pause in the auto-recording system
-      // For now, show that it's not supported
-      statusEl.textContent = "Pause not supported in voice mode";
-      btnPause.disabled = false;
-      return;
+      // Pause voice-activated mode by disarming VAD
+      await invoke("disarm_auto_recording");
+      statusEl.textContent = "Paused";
+      updateUIForState({ type: "Paused", data: { pause_time: new Date().toISOString(), elapsed_ms: 0 } });
     } else {
       // Pause manual recording
       await invoke<string>("pause_recording");
@@ -104,10 +112,18 @@ async function resume() {
     statusEl.textContent = "Resuming…";
 
     if (isVoiceMode) {
-      // For voice mode, we'll need to implement resume in the auto-recording system
-      statusEl.textContent = "Resume not supported in voice mode";
-      btnResume.disabled = false;
-      return;
+      // Resume voice-activated mode by re-arming VAD with saved config
+      const cfg = savedVoiceConfig || {
+        threshold: 0.01,
+        minSpeechMs: 100,
+        silenceMs: 1000,
+        preRollMs: 250,
+        format: (formatSel?.value || "wav").toLowerCase(),
+        quality: (qualitySel?.value || "high").toLowerCase(),
+      };
+      await invoke("arm_auto_recording", cfg);
+      statusEl.textContent = "Listening for voice…";
+      updateUIForState({ type: "Recording", data: { start_time: new Date().toISOString(), elapsed_ms: 0 } });
     } else {
       // Resume manual recording
       await invoke<string>("resume_recording");
@@ -127,10 +143,13 @@ async function stop() {
     statusEl.textContent = "Stopping…";
 
     if (isVoiceMode) {
-      // Stop voice activation mode
-      await invoke("disarm_auto_recording");
+      // Stop voice activation mode: disarm then finalize single file
+      try { await invoke("disarm_auto_recording"); } catch {}
+      const saved = await invoke<string>("finalize_auto_recording");
       statusEl.textContent = "Idle";
+      lastSavedEl.textContent = `Saved: ${saved}`;
       isVoiceMode = false;
+      savedVoiceConfig = null;
     } else {
       // Stop manual recording
       const saved = await invoke<string>("stop_recording");
@@ -152,6 +171,23 @@ function updateUIForState(state: RecordingState) {
 
   if (!btnStart || !btnPause || !btnResume || !btnStop) return;
 
+  const setConfigControlsEnabled = (enabled: boolean) => {
+    if (formatSel) formatSel.disabled = !enabled;
+    if (qualitySel) {
+      // When enabled, only allow editing for MP3; otherwise keep disabled
+      if (enabled) {
+        const isMp3 = formatSel?.value === "mp3";
+        qualitySel.disabled = !isMp3;
+      } else {
+        qualitySel.disabled = true;
+      }
+      (document.querySelector("#quality-wrap") as HTMLElement)?.classList.toggle("disabled", qualitySel.disabled);
+    }
+  };
+  const setModeControlEnabled = (enabled: boolean) => {
+    if (autoDetectChk) autoDetectChk.disabled = !enabled;
+  };
+
   // Reset all buttons
   btnStart.disabled = false;
   btnPause.disabled = true;
@@ -165,12 +201,16 @@ function updateUIForState(state: RecordingState) {
   switch (state.type) {
     case "Idle":
       btnStart.disabled = false;
+      setConfigControlsEnabled(true);
+      setModeControlEnabled(true);
       break;
     case "Starting":
     case "Recording":
       btnStart.disabled = true;
       btnPause.disabled = false;
       btnStop.disabled = false;
+      setConfigControlsEnabled(false);
+      setModeControlEnabled(false);
       break;
     case "Paused":
       btnStart.disabled = true;
@@ -178,13 +218,19 @@ function updateUIForState(state: RecordingState) {
       btnResume.style.display = "inline-block";
       btnResume.disabled = false;
       btnStop.disabled = false;
+      setConfigControlsEnabled(false);
+      setModeControlEnabled(false);
       break;
     case "Resuming":
       btnStart.disabled = true;
       btnStop.disabled = false;
+      setConfigControlsEnabled(false);
+      setModeControlEnabled(false);
       break;
     case "Stopping":
       btnStart.disabled = true;
+      setConfigControlsEnabled(false);
+      setModeControlEnabled(false);
       break;
   }
 }
@@ -205,6 +251,8 @@ window.addEventListener("DOMContentLoaded", () => {
   btnPause?.addEventListener("click", pause);
   btnResume?.addEventListener("click", resume);
   btnStop?.addEventListener("click", stop);
+
+  // No special disabling; pause/resume supported for both modes now
 
   // Listen for recording state changes from backend
   listen<RecordingState>("recording-state-changed", (event) => {
