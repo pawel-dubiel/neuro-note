@@ -7,10 +7,16 @@ pub struct OpenAIOptions {
   pub api_key: String,
   #[serde(default = "default_model")]
   pub model: String,
+  #[serde(default = "default_system_prompt")]
+  pub system_prompt: String,
 }
 
 fn default_model() -> String {
   "gpt-4.1".into()
+}
+
+fn default_system_prompt() -> String {
+  "You are an AI assistant that analyzes conversations and answers questions in the language that conversation is going on".into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,7 +50,7 @@ pub async fn analyze_conversation(opts: OpenAIOptions, transcript: String) -> Re
 
   log_to_file(&format!("OpenAI: Analyzing transcript of {} chars", transcript.len()));
 
-  let system_prompt = "You are an AI assistant that analyzes conversations and answers questions in the language that conversation is going on";
+  let system_prompt = opts.system_prompt.as_str();
 
   let user_prompt = format!("Please analyze this conversation transcript and answer recent question\n\n{}", transcript);
 
