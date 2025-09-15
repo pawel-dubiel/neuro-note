@@ -61,11 +61,10 @@ pub async fn start_session(
     };
     let _ = app_for_task.emit("soniox-status", "connected");
 
-    // Build config similar to the Python example
     let mut config = json!({
       "api_key": opts_for_task.api_key,
-      "model": "stt-rt-preview",
-      "language_hints": ["en", "es"],
+      "model": "stt-rt-preview-v2",
+      "language_hints": ["en", "pl"],
       "enable_language_identification": true,
       "enable_speaker_diarization": true,
       "context": "",
