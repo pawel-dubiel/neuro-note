@@ -14,13 +14,35 @@
   -webkit-text-size-adjust: 100%;
 }
 
+/* Window drag area for transparent title bar */
+body {
+  margin: 0;
+  padding: 0;
+}
+
+.titlebar {
+  height: 40px;
+  background: transparent;
+  -webkit-app-region: drag;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+}
+
 .container {
   margin: 0;
-  padding-top: 8vh;
+  padding-top: 60px; /* Account for transparent titlebar */
+  padding-left: 20px;
+  padding-right: 20px;
+  padding-bottom: 20px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   text-align: center;
+  min-height: 100vh;
+  box-sizing: border-box;
 }
 
 .row { display: flex; justify-content: center; }
