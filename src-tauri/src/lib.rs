@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     sync::{mpsc, Arc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -12,6 +13,60 @@ use serde::Serialize;
 use tauri::{Emitter, State};
 
 pub mod lame_encoder;
+
+// State machine for recording operations
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", content = "data")]
+enum RecordingState {
+    Idle,
+    Starting,
+    Recording {
+        start_time: String, // Serialized timestamp
+        elapsed_ms: u64,
+    },
+    Paused {
+        pause_time: String, // Serialized timestamp
+        elapsed_ms: u64,
+    },
+    Resuming,
+    Stopping,
+}
+
+impl Default for RecordingState {
+    fn default() -> Self {
+        RecordingState::Idle
+    }
+}
+
+// Commands for recording operations
+#[derive(Debug, Clone)]
+enum RecordingCommand {
+    Start {
+        path: PathBuf,
+        format: String,
+        quality: String,
+    },
+    Pause,
+    Resume,
+    Stop,
+}
+
+// Configuration for recording sessions
+#[derive(Debug, Clone)]
+struct RecordingConfig {
+    path: PathBuf,
+    format: String,
+    quality: String,
+}
+
+// Internal state for tracking recording session
+#[derive(Debug)]
+struct RecordingSession {
+    config: RecordingConfig,
+    start_time: Instant,
+    total_elapsed: Duration,
+    state: RecordingState,
+}
 
 pub enum AudioWriter {
     Wav(hound::WavWriter<BufWriter<File>>),
@@ -136,12 +191,231 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-#[derive(Default)]
+#[derive(Clone)]
 struct AppState {
-    // Control channel to stop the recording thread.
-    stop_tx: Mutex<Option<mpsc::Sender<()>>>,
-    // Receives completion result (saved path or error) from the recording thread.
-    done_rx: Mutex<Option<mpsc::Receiver<Result<String, String>>>>,
+    // Enhanced state management with atomic transitions
+    current_state: Arc<Mutex<RecordingState>>,
+    recording_session: Arc<Mutex<Option<RecordingSession>>>,
+
+    // Command processing
+    command_tx: Arc<Mutex<Option<mpsc::Sender<RecordingCommand>>>>,
+
+    // Legacy channels (kept for backward compatibility during transition)
+    stop_tx: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+    done_rx: Arc<Mutex<Option<mpsc::Receiver<Result<String, String>>>>>,
+
+    // Audio writer state (protected for pause/resume)
+    writer_state: Arc<Mutex<Option<AudioWriter>>>,
+    is_writing_enabled: Arc<Mutex<bool>>, // Controls whether samples are written during pause
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            current_state: Arc::new(Mutex::new(RecordingState::Idle)),
+            recording_session: Arc::new(Mutex::new(None)),
+            command_tx: Arc::new(Mutex::new(None)),
+            stop_tx: Arc::new(Mutex::new(None)),
+            done_rx: Arc::new(Mutex::new(None)),
+            writer_state: Arc::new(Mutex::new(None)),
+            is_writing_enabled: Arc::new(Mutex::new(false)),
+        }
+    }
+}
+
+impl AppState {
+    // Atomic state transition with validation
+    fn transition_state(&self, from: RecordingState, to: RecordingState, app: &tauri::AppHandle) -> Result<(), String> {
+        let mut current_state = self.current_state.lock().map_err(|_| "Failed to lock state")?;
+
+        // Validate transition is allowed
+        if *current_state != from {
+            return Err(format!("Invalid state transition: expected {:?}, found {:?}", from, *current_state));
+        }
+
+        // Update timestamps for state tracking
+        let new_state = match &to {
+            RecordingState::Recording { .. } => {
+                let now = Instant::now();
+                RecordingState::Recording {
+                    start_time: format!("{:?}", now),
+                    elapsed_ms: 0,
+                }
+            },
+            RecordingState::Paused { .. } => {
+                if let Some(session) = self.recording_session.lock().unwrap().as_ref() {
+                    let elapsed = session.start_time.elapsed() + session.total_elapsed;
+                    RecordingState::Paused {
+                        pause_time: format!("{:?}", Instant::now()),
+                        elapsed_ms: elapsed.as_millis() as u64,
+                    }
+                } else {
+                    return Err("No recording session found for pause".to_string());
+                }
+            },
+            _ => to,
+        };
+
+        *current_state = new_state.clone();
+
+        // Emit state change event to UI
+        let _ = app.emit("recording-state-changed", &new_state);
+
+        Ok(())
+    }
+
+    // Get current state safely
+    fn get_current_state(&self) -> Result<RecordingState, String> {
+        self.current_state
+            .lock()
+            .map(|state| state.clone())
+            .map_err(|_| "Failed to lock state".to_string())
+    }
+
+    // Update writing enabled state atomically
+    fn set_writing_enabled(&self, enabled: bool) -> Result<(), String> {
+        *self.is_writing_enabled.lock().map_err(|_| "Failed to lock writing state")? = enabled;
+        Ok(())
+    }
+
+    // Check if writing is enabled
+    fn is_writing_enabled(&self) -> bool {
+        *self.is_writing_enabled.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+// Command processing functions
+impl AppState {
+    fn process_command(&self, command: RecordingCommand, app: &tauri::AppHandle) -> Result<String, String> {
+        match command {
+            RecordingCommand::Start { path, format, quality } => {
+                self.handle_start_command(path, format, quality, app)
+            },
+            RecordingCommand::Pause => {
+                self.handle_pause_command(app)
+            },
+            RecordingCommand::Resume => {
+                self.handle_resume_command(app)
+            },
+            RecordingCommand::Stop => {
+                self.handle_stop_command(app)
+            },
+        }
+    }
+
+    fn handle_start_command(&self, path: PathBuf, format: String, quality: String, app: &tauri::AppHandle) -> Result<String, String> {
+        // Validate we can start
+        let current_state = self.get_current_state()?;
+        if current_state != RecordingState::Idle {
+            return Err(format!("Cannot start recording in state: {:?}", current_state));
+        }
+
+        // Transition to Starting state
+        self.transition_state(RecordingState::Idle, RecordingState::Starting, app)?;
+
+        // Create recording session
+        let config = RecordingConfig { path: path.clone(), format, quality };
+        let session = RecordingSession {
+            config: config.clone(),
+            start_time: Instant::now(),
+            total_elapsed: Duration::from_secs(0),
+            state: RecordingState::Starting,
+        };
+
+        *self.recording_session.lock().map_err(|_| "Failed to lock session")? = Some(session);
+
+        // Enable writing
+        self.set_writing_enabled(true)?;
+
+        // Transition to Recording state
+        self.transition_state(RecordingState::Starting, RecordingState::Recording {
+            start_time: format!("{:?}", Instant::now()),
+            elapsed_ms: 0
+        }, app)?;
+
+        Ok(format!("Started recording to: {}", path.display()))
+    }
+
+    fn handle_pause_command(&self, app: &tauri::AppHandle) -> Result<String, String> {
+        let current_state = self.get_current_state()?;
+
+        match current_state {
+            RecordingState::Recording { .. } => {
+                // Disable writing (audio continues capturing but not saved)
+                self.set_writing_enabled(false)?;
+
+                // Transition to Paused state
+                self.transition_state(current_state, RecordingState::Paused {
+                    pause_time: format!("{:?}", Instant::now()),
+                    elapsed_ms: 0
+                }, app)?;
+
+                Ok("Recording paused".to_string())
+            },
+            _ => Err(format!("Cannot pause in state: {:?}", current_state))
+        }
+    }
+
+    fn handle_resume_command(&self, app: &tauri::AppHandle) -> Result<String, String> {
+        let current_state = self.get_current_state()?;
+
+        match current_state {
+            RecordingState::Paused { .. } => {
+                // Transition to Resuming state
+                self.transition_state(current_state, RecordingState::Resuming, app)?;
+
+                // Enable writing
+                self.set_writing_enabled(true)?;
+
+                // Update session elapsed time
+                if let Some(session) = self.recording_session.lock().unwrap().as_mut() {
+                    session.total_elapsed = session.start_time.elapsed();
+                    session.start_time = Instant::now(); // Reset start time for new segment
+                }
+
+                // Transition to Recording state
+                self.transition_state(RecordingState::Resuming, RecordingState::Recording {
+                    start_time: format!("{:?}", Instant::now()),
+                    elapsed_ms: 0,
+                }, app)?;
+
+                Ok("Recording resumed".to_string())
+            },
+            _ => Err(format!("Cannot resume in state: {:?}", current_state))
+        }
+    }
+
+    fn handle_stop_command(&self, app: &tauri::AppHandle) -> Result<String, String> {
+        let current_state = self.get_current_state()?;
+
+        match current_state {
+            RecordingState::Recording { .. } | RecordingState::Paused { .. } => {
+                // Transition to Stopping state
+                self.transition_state(current_state, RecordingState::Stopping, app)?;
+
+                // Disable writing
+                self.set_writing_enabled(false)?;
+
+                // For now, we'll rely on the existing stop mechanism
+                // The new state system doesn't fully manage the writer yet
+                // so we'll return a placeholder path
+                let path = if let Some(session) = self.recording_session.lock().unwrap().as_ref() {
+                    session.config.path.display().to_string()
+                } else {
+                    "recording.wav".to_string()
+                };
+
+                // Clear session
+                *self.recording_session.lock().unwrap() = None;
+
+                // Transition to Idle state
+                self.transition_state(RecordingState::Stopping, RecordingState::Idle, app)?;
+
+                Ok(path)
+            },
+            _ => Err(format!("Cannot stop in state: {:?}", current_state))
+        }
+    }
 }
 
 #[tauri::command]
@@ -152,9 +426,10 @@ fn start_recording(
     format: Option<String>,
     quality: Option<String>,
 ) -> Result<String, String> {
-    // Prevent double-start
-    if state.inner().stop_tx.lock().unwrap().is_some() {
-        return Err("Recording already in progress".into());
+    // Check if we can start using the new state system
+    let current_state = state.inner().get_current_state().map_err(|e| format!("State error: {}", e))?;
+    if current_state != RecordingState::Idle {
+        return Err(format!("Recording already in progress: {:?}", current_state));
     }
 
     // Resolve output path
@@ -182,6 +457,7 @@ fn start_recording(
     let app_for_thread = app.clone();
     let _target_format = format.unwrap_or_else(|| "wav".into());
     let _target_quality = quality.unwrap_or_else(|| "high".into());
+    let state_for_thread = state.inner().clone();
 
     thread::spawn(move || {
         // Prepare audio device/config inside the thread so we don't need Send.
@@ -281,14 +557,44 @@ fn start_recording(
             }
         };
 
+        // Set up recording session in new state system
+        let recording_config = RecordingConfig {
+            path: finalize_path.clone(),
+            format: _target_format.clone(),
+            quality: _target_quality.clone(),
+        };
+        let session = RecordingSession {
+            config: recording_config.clone(),
+            start_time: std::time::Instant::now(),
+            total_elapsed: Duration::from_secs(0),
+            state: RecordingState::Recording {
+                start_time: format!("{:?}", std::time::Instant::now()),
+                elapsed_ms: 0,
+            },
+        };
+        *state_for_thread.recording_session.lock().unwrap() = Some(session);
+
+        // Enable writing initially
+        *state_for_thread.is_writing_enabled.lock().unwrap() = true;
+
+        // Transition to Recording state
+        let _ = state_for_thread.transition_state(
+            RecordingState::Idle,
+            RecordingState::Recording {
+                start_time: format!("{:?}", std::time::Instant::now()),
+                elapsed_ms: 0,
+            },
+            &app_for_thread
+        );
+
         // Build stream with proper sample type
         let writer_clone = writer.clone();
         let err_fn = |e| eprintln!("Stream error: {e}");
         let stream_cfg: cpal::StreamConfig = config.clone().into();
         let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => build_stream_f32(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone()),
-            cpal::SampleFormat::I16 => build_stream_i16(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone()),
-            cpal::SampleFormat::U16 => build_stream_u16(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone()),
+            cpal::SampleFormat::F32 => build_stream_f32(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone(), Arc::new(state_for_thread.clone())),
+            cpal::SampleFormat::I16 => build_stream_i16(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone(), Arc::new(state_for_thread.clone())),
+            cpal::SampleFormat::U16 => build_stream_u16(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone(), Arc::new(state_for_thread.clone())),
             _ => Err("Unsupported sample format".into()),
         };
         let stream = match stream {
@@ -701,6 +1007,28 @@ fn stop_recording(state: State<AppState>) -> Result<String, String> {
     }
 }
 
+// New pause/resume commands using the enhanced state management
+#[tauri::command]
+fn pause_recording(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> Result<String, String> {
+    state.inner().process_command(RecordingCommand::Pause, &app)
+}
+
+#[tauri::command]
+fn resume_recording(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> Result<String, String> {
+    state.inner().process_command(RecordingCommand::Resume, &app)
+}
+
+#[tauri::command]
+fn get_recording_state(state: State<AppState>) -> Result<RecordingState, String> {
+    state.inner().get_current_state()
+}
+
 #[derive(Serialize, Clone)]
 struct LevelPayload {
     rms: f32,
@@ -713,21 +1041,35 @@ fn build_stream_f32(
     writer: Arc<Mutex<Option<AudioWriter>>>,
     err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     app: tauri::AppHandle,
+    app_state: Arc<AppState>,
 ) -> Result<cpal::Stream, String> {
     let data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
-        if let Ok(mut guard) = writer.lock() {
-            if let Some(w) = guard.as_mut() {
-                let mut peak = 0.0f32;
-                let mut sum_sq = 0.0f32;
-                for &sample in data {
-                    let s = sample.clamp(-1.0, 1.0);
-                    peak = peak.max(s.abs());
-                    sum_sq += s * s;
-                    let i = (s * i16::MAX as f32) as i16;
-                    let _ = w.write_sample(i);
+        let mut peak = 0.0f32;
+        let mut sum_sq = 0.0f32;
+
+        // Always calculate audio levels for UI feedback (even when paused)
+        for &sample in data {
+            let s = sample.clamp(-1.0, 1.0);
+            peak = peak.max(s.abs());
+            sum_sq += s * s;
+        }
+        let rms = (sum_sq / (data.len().max(1) as f32)).sqrt();
+        let _ = app.emit("audio-level", LevelPayload { rms, peak });
+
+        // Only write samples if recording is not paused
+        if app_state.is_writing_enabled() {
+            if let Ok(mut guard) = writer.lock() {
+                if let Some(w) = guard.as_mut() {
+                    for &sample in data {
+                        let s = sample.clamp(-1.0, 1.0);
+                        let i = (s * i16::MAX as f32) as i16;
+                        // Proper error handling instead of ignoring failures
+                        if let Err(e) = w.write_sample(i) {
+                            eprintln!("Warning: Failed to write audio sample: {}", e);
+                            // Could emit an error event to UI here if needed
+                        }
+                    }
                 }
-                let rms = (sum_sq / (data.len().max(1) as f32)).sqrt();
-                let _ = app.emit("audio-level", LevelPayload { rms, peak });
             }
         }
     };
@@ -743,20 +1085,31 @@ fn build_stream_i16(
     writer: Arc<Mutex<Option<AudioWriter>>>,
     err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     app: tauri::AppHandle,
+    app_state: Arc<AppState>,
 ) -> Result<cpal::Stream, String> {
     let data_fn = move |data: &[i16], _: &cpal::InputCallbackInfo| {
-        if let Ok(mut guard) = writer.lock() {
-            if let Some(w) = guard.as_mut() {
-                let mut peak = 0.0f32;
-                let mut sum_sq = 0.0f32;
-                for &sample in data {
-                    let s = (sample as f32) / (i16::MAX as f32);
-                    peak = peak.max(s.abs());
-                    sum_sq += s * s;
-                    let _ = w.write_sample(sample);
+        let mut peak = 0.0f32;
+        let mut sum_sq = 0.0f32;
+
+        // Always calculate audio levels for UI feedback (even when paused)
+        for &sample in data {
+            let s = (sample as f32) / (i16::MAX as f32);
+            peak = peak.max(s.abs());
+            sum_sq += s * s;
+        }
+        let rms = (sum_sq / (data.len().max(1) as f32)).sqrt();
+        let _ = app.emit("audio-level", LevelPayload { rms, peak });
+
+        // Only write samples if recording is not paused
+        if app_state.is_writing_enabled() {
+            if let Ok(mut guard) = writer.lock() {
+                if let Some(w) = guard.as_mut() {
+                    for &sample in data {
+                        if let Err(e) = w.write_sample(sample) {
+                            eprintln!("Warning: Failed to write audio sample: {}", e);
+                        }
+                    }
                 }
-                let rms = (sum_sq / (data.len().max(1) as f32)).sqrt();
-                let _ = app.emit("audio-level", LevelPayload { rms, peak });
             }
         }
     };
@@ -772,21 +1125,32 @@ fn build_stream_u16(
     writer: Arc<Mutex<Option<AudioWriter>>>,
     err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     app: tauri::AppHandle,
+    app_state: Arc<AppState>,
 ) -> Result<cpal::Stream, String> {
     let data_fn = move |data: &[u16], _: &cpal::InputCallbackInfo| {
-        if let Ok(mut guard) = writer.lock() {
-            if let Some(w) = guard.as_mut() {
-                let mut peak = 0.0f32;
-                let mut sum_sq = 0.0f32;
-                for &sample in data {
-                    let s = ((sample as i32 - 32768) as f32) / (i16::MAX as f32);
-                    peak = peak.max(s.abs());
-                    sum_sq += s * s;
-                    let i = (sample as i32 - 32768) as i16;
-                    let _ = w.write_sample(i);
+        let mut peak = 0.0f32;
+        let mut sum_sq = 0.0f32;
+
+        // Always calculate audio levels for UI feedback (even when paused)
+        for &sample in data {
+            let s = ((sample as i32 - 32768) as f32) / (i16::MAX as f32);
+            peak = peak.max(s.abs());
+            sum_sq += s * s;
+        }
+        let rms = (sum_sq / (data.len().max(1) as f32)).sqrt();
+        let _ = app.emit("audio-level", LevelPayload { rms, peak });
+
+        // Only write samples if recording is not paused
+        if app_state.is_writing_enabled() {
+            if let Ok(mut guard) = writer.lock() {
+                if let Some(w) = guard.as_mut() {
+                    for &sample in data {
+                        let i = (sample as i32 - 32768) as i16;
+                        if let Err(e) = w.write_sample(i) {
+                            eprintln!("Warning: Failed to write audio sample: {}", e);
+                        }
+                    }
                 }
-                let rms = (sum_sq / (data.len().max(1) as f32)).sqrt();
-                let _ = app.emit("audio-level", LevelPayload { rms, peak });
             }
         }
     };
@@ -802,7 +1166,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![greet, start_recording, stop_recording, arm_auto_recording, disarm_auto_recording])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            start_recording,
+            stop_recording,
+            arm_auto_recording,
+            disarm_auto_recording,
+            pause_recording,
+            resume_recording,
+            get_recording_state
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

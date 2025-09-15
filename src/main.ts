@@ -3,6 +3,8 @@ import { documentDir, join } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
 
 let btnStart: HTMLButtonElement | null;
+let btnPause: HTMLButtonElement | null;
+let btnResume: HTMLButtonElement | null;
 let btnStop: HTMLButtonElement | null;
 let statusEl: HTMLElement | null;
 let lastSavedEl: HTMLElement | null;
@@ -13,10 +15,21 @@ let autoDetectChk: HTMLInputElement | null;
 let currentPath: string | null = null;
 let isVoiceMode = false;
 
+// Recording state management
+type RecordingState =
+  | { type: "Idle" }
+  | { type: "Starting" }
+  | { type: "Recording", data: { start_time: string, elapsed_ms: number } }
+  | { type: "Paused", data: { pause_time: string, elapsed_ms: number } }
+  | { type: "Resuming" }
+  | { type: "Stopping" };
+
+// Current recording state is managed by the backend now
+
 async function start() {
   if (!btnStart || !btnStop || !statusEl) return;
   try {
-    btnStart.disabled = true;
+    updateUIForState({ type: "Starting" });
     statusEl.textContent = "Starting…";
 
     if (autoDetectChk?.checked) {
@@ -34,7 +47,9 @@ async function start() {
         quality,
       });
       statusEl.textContent = "Listening for voice…";
-      btnStop.disabled = false;
+      // Note: Voice mode doesn't support pause/resume yet
+      updateUIForState({ type: "Recording", data: { start_time: new Date().toISOString(), elapsed_ms: 0 } });
+      if (btnPause) btnPause.disabled = true; // Disable pause for voice mode
     } else {
       // Manual recording mode
       isVoiceMode = false;
@@ -50,11 +65,58 @@ async function start() {
         quality,
       });
       statusEl.textContent = `Recording… (${currentPath})`;
-      btnStop.disabled = false;
+      updateUIForState({ type: "Recording", data: { start_time: new Date().toISOString(), elapsed_ms: 0 } });
     }
   } catch (e: any) {
     statusEl.textContent = `Error: ${e}`;
-    btnStart.disabled = false;
+    updateUIForState({ type: "Idle" });
+  }
+}
+
+async function pause() {
+  if (!btnPause || !btnResume || !statusEl) return;
+  try {
+    btnPause.disabled = true;
+    statusEl.textContent = "Pausing…";
+
+    if (isVoiceMode) {
+      // For voice mode, we'll need to implement pause in the auto-recording system
+      // For now, show that it's not supported
+      statusEl.textContent = "Pause not supported in voice mode";
+      btnPause.disabled = false;
+      return;
+    } else {
+      // Pause manual recording
+      await invoke<string>("pause_recording");
+      statusEl.textContent = "Paused";
+      updateUIForState({ type: "Paused", data: { pause_time: new Date().toISOString(), elapsed_ms: 0 } });
+    }
+  } catch (e: any) {
+    statusEl.textContent = `Error: ${e}`;
+    btnPause.disabled = false;
+  }
+}
+
+async function resume() {
+  if (!btnPause || !btnResume || !statusEl) return;
+  try {
+    btnResume.disabled = true;
+    statusEl.textContent = "Resuming…";
+
+    if (isVoiceMode) {
+      // For voice mode, we'll need to implement resume in the auto-recording system
+      statusEl.textContent = "Resume not supported in voice mode";
+      btnResume.disabled = false;
+      return;
+    } else {
+      // Resume manual recording
+      await invoke<string>("resume_recording");
+      statusEl.textContent = "Recording…";
+      updateUIForState({ type: "Recording", data: { start_time: new Date().toISOString(), elapsed_ms: 0 } });
+    }
+  } catch (e: any) {
+    statusEl.textContent = `Error: ${e}`;
+    btnResume.disabled = false;
   }
 }
 
@@ -76,6 +138,7 @@ async function stop() {
       lastSavedEl.textContent = `Saved: ${saved}`;
       currentPath = null;
     }
+    updateUIForState({ type: "Idle" });
   } catch (e: any) {
     statusEl.textContent = `Error: ${e}`;
   } finally {
@@ -84,8 +147,52 @@ async function stop() {
   }
 }
 
+function updateUIForState(state: RecordingState) {
+  // Update UI based on current recording state
+
+  if (!btnStart || !btnPause || !btnResume || !btnStop) return;
+
+  // Reset all buttons
+  btnStart.disabled = false;
+  btnPause.disabled = true;
+  btnResume.disabled = true;
+  btnStop.disabled = true;
+
+  // Hide resume button by default
+  btnResume.style.display = "none";
+  btnPause.style.display = "inline-block";
+
+  switch (state.type) {
+    case "Idle":
+      btnStart.disabled = false;
+      break;
+    case "Starting":
+    case "Recording":
+      btnStart.disabled = true;
+      btnPause.disabled = false;
+      btnStop.disabled = false;
+      break;
+    case "Paused":
+      btnStart.disabled = true;
+      btnPause.style.display = "none";
+      btnResume.style.display = "inline-block";
+      btnResume.disabled = false;
+      btnStop.disabled = false;
+      break;
+    case "Resuming":
+      btnStart.disabled = true;
+      btnStop.disabled = false;
+      break;
+    case "Stopping":
+      btnStart.disabled = true;
+      break;
+  }
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   btnStart = document.querySelector("#btn-start");
+  btnPause = document.querySelector("#btn-pause");
+  btnResume = document.querySelector("#btn-resume");
   btnStop = document.querySelector("#btn-stop");
   statusEl = document.querySelector("#status");
   lastSavedEl = document.querySelector("#last-saved");
@@ -95,8 +202,37 @@ window.addEventListener("DOMContentLoaded", () => {
   autoDetectChk = document.querySelector("#auto");
 
   btnStart?.addEventListener("click", start);
+  btnPause?.addEventListener("click", pause);
+  btnResume?.addEventListener("click", resume);
   btnStop?.addEventListener("click", stop);
-  
+
+  // Listen for recording state changes from backend
+  listen<RecordingState>("recording-state-changed", (event) => {
+    updateUIForState(event.payload);
+    if (statusEl) {
+      switch (event.payload.type) {
+        case "Idle":
+          statusEl.textContent = "Idle";
+          break;
+        case "Recording":
+          statusEl.textContent = "Recording…";
+          break;
+        case "Paused":
+          statusEl.textContent = "Paused";
+          break;
+        case "Starting":
+          statusEl.textContent = "Starting…";
+          break;
+        case "Resuming":
+          statusEl.textContent = "Resuming…";
+          break;
+        case "Stopping":
+          statusEl.textContent = "Stopping…";
+          break;
+      }
+    }
+  });
+
   // Audio level meter
   listen<{ rms: number; peak: number }>("audio-level", (event) => {
     const { peak } = event.payload;
