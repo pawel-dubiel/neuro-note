@@ -93,10 +93,12 @@ body {
   font-size: 0.9rem;
   color: #444;
 }
-.selects .soniox-key input {
+.selects .soniox-key input,
+.selects .openai-key input {
   width: 220px;
 }
-.soniox-status {
+.soniox-status,
+.openai-status {
   font-size: 12px;
   padding: 2px 6px;
   border-radius: 999px;
@@ -108,6 +110,10 @@ body {
 .soniox-status.connected { color: #3c763d; border-color: #d6e9c6; background: #dff0d8; }
 .soniox-status.error { color: #a94442; border-color: #ebccd1; background: #f2dede; }
 .soniox-status.off { color: #666; border-color: #ddd; background: #fafafa; }
+
+.openai-status.analyzing { color: #0066cc; border-color: #b3d9ff; background: #e6f3ff; }
+.openai-status.ready { color: #3c763d; border-color: #d6e9c6; background: #dff0d8; }
+.openai-status.error { color: #a94442; border-color: #ebccd1; background: #f2dede; }
 select {
   padding: 0.4em 0.6em;
   border-radius: 8px;
@@ -138,17 +144,20 @@ select {
   transition: width 80ms linear;
 }
 
-.transcript-wrap {
+.transcript-wrap,
+.ai-analysis-wrap {
   margin: 16px auto;
   width: min(720px, 92vw);
 }
-.transcript-wrap .label {
+.transcript-wrap .label,
+.ai-analysis-wrap .label {
   font-size: 12px;
   color: #555;
   margin-bottom: 6px;
   text-align: left;
 }
-.transcript {
+.transcript,
+.ai-analysis {
   min-height: 160px;
   max-height: 40vh;
   overflow-y: auto;
@@ -157,9 +166,16 @@ select {
   border-radius: 8px;
   padding: 12px;
   text-align: left;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   line-height: 1.4;
   white-space: pre-wrap;
+}
+.transcript {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+.ai-analysis {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+  border-color: #d1ecf1;
+  background: #f8fdff;
 }
 
 h1 {
@@ -239,6 +255,12 @@ select:focus {
     background: #2c2c2e;
     border-color: rgba(255, 255, 255, 0.1);
     color: #f5f5f7;
+  }
+
+  .ai-analysis {
+    background: #1a2332;
+    border-color: rgba(129, 199, 212, 0.2);
+    color: #e8f4f8;
   }
 
   .meter {
