@@ -21,6 +21,11 @@ let openaiModelSel: HTMLSelectElement | null;
 let openaiEnableChk: HTMLInputElement | null;
 let openaiStatusEl: HTMLElement | null;
 let aiAnalysisEl: HTMLElement | null;
+let aiPrevBtn: HTMLButtonElement | null;
+let aiNextBtn: HTMLButtonElement | null;
+let aiPosEl: HTMLElement | null;
+let aiAnswers: string[] = [];
+let aiIndex: number = -1; // -1 means no history yet
 let lastTranscript = "";
 let lastAnalyzedStable = "";
 let lastAnalysisAt = 0;
@@ -307,16 +312,7 @@ async function analyzeWithOpenAI(transcriptOverride?: string) {
       model: selectedModel
     });
 
-    if (aiAnalysisEl) {
-      // Remove placeholder if present
-      const placeholder = aiAnalysisEl.querySelector(".placeholder");
-      if (placeholder) {
-        placeholder.remove();
-      }
-
-      aiAnalysisEl.textContent = result;
-      aiAnalysisEl.scrollTop = aiAnalysisEl.scrollHeight;
-    }
+    pushAiAnswer(result);
 
     if (openaiStatusEl) {
       openaiStatusEl.textContent = "Ready";
@@ -553,6 +549,23 @@ window.addEventListener("DOMContentLoaded", () => {
   // Soniox transcript events
   const transcriptEl = document.getElementById("transcript");
   gateCountEl = document.getElementById("gate-count");
+  aiPrevBtn = document.getElementById("ai-prev") as HTMLButtonElement | null;
+  aiNextBtn = document.getElementById("ai-next") as HTMLButtonElement | null;
+  aiPosEl = document.getElementById("ai-pos");
+
+  // History navigation
+  aiPrevBtn?.addEventListener("click", () => {
+    if (aiIndex > 0) {
+      aiIndex -= 1;
+      renderAiAnswer();
+    }
+  });
+  aiNextBtn?.addEventListener("click", () => {
+    if (aiIndex >= 0 && aiIndex < aiAnswers.length - 1) {
+      aiIndex += 1;
+      renderAiAnswer();
+    }
+  });
   listen<string>("soniox-transcript", (event) => {
     console.log("📝 Received soniox-transcript event:", event.payload);
 
@@ -767,3 +780,36 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 });
+
+// Push a new AI answer into history and show it
+function pushAiAnswer(answer: string) {
+  aiAnswers.push(answer);
+  aiIndex = aiAnswers.length - 1; // auto-move to most recent
+  renderAiAnswer();
+}
+
+// Render current AI answer and update navigation state
+function renderAiAnswer() {
+  if (!aiAnalysisEl) return;
+
+  // Manage placeholder
+  const placeholder = aiAnalysisEl.querySelector(".placeholder");
+  if (aiAnswers.length === 0) {
+    if (!placeholder) {
+      const ph = document.createElement("div");
+      ph.className = "placeholder";
+      ph.textContent = "No answers yet.";
+      aiAnalysisEl.innerHTML = "";
+      aiAnalysisEl.appendChild(ph);
+    }
+  } else {
+    if (placeholder) placeholder.remove();
+    aiAnalysisEl.textContent = aiAnswers[aiIndex] || "";
+    aiAnalysisEl.scrollTop = aiAnalysisEl.scrollHeight;
+  }
+
+  // Update nav controls
+  if (aiPrevBtn) aiPrevBtn.disabled = !(aiIndex > 0);
+  if (aiNextBtn) aiNextBtn.disabled = !(aiIndex >= 0 && aiIndex < aiAnswers.length - 1);
+  if (aiPosEl) aiPosEl.textContent = `${Math.max(0, aiIndex + 1)}/${aiAnswers.length}`;
+}
