@@ -15,6 +15,7 @@ use tauri::{Emitter, State};
 mod utils;
 mod audio;
 mod soniox;
+mod openai;
 #[cfg(test)]
 mod soniox_test;
 pub use audio::AudioWriter;
@@ -967,6 +968,25 @@ fn stop_soniox_session(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn analyze_with_openai(transcript: String, api_key: String, model: Option<String>) -> Result<String, String> {
+    if api_key.is_empty() {
+        return Err("OpenAI API key is required".to_string());
+    }
+
+    let opts = openai::OpenAIOptions {
+        api_key,
+        model: model.unwrap_or_else(|| "gpt-4.1".to_string()),
+    };
+
+    openai::analyze_conversation(opts, transcript).await
+}
+
+#[tauri::command]
+async fn get_openai_models(api_key: String) -> Result<Vec<String>, String> {
+    openai::get_available_models(api_key).await
+}
+
 #[derive(Serialize, Clone)]
 struct LevelPayload {
     rms: f32,
@@ -1157,7 +1177,9 @@ pub fn run() {
             resume_recording,
             get_recording_state,
             start_soniox_session,
-            stop_soniox_session
+            stop_soniox_session,
+            analyze_with_openai,
+            get_openai_models
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
