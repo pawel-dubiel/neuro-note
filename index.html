@@ -49,6 +49,22 @@
               <input id="soniox-enable" type="checkbox" />
             </label>
             <span id="soniox-status" class="soniox-status off" title="Soniox connection status">Off</span>
+            <label class="openai-key">
+              OpenAI API Key
+              <input id="openai-api" type="password" placeholder="sk-..." autocomplete="off" />
+            </label>
+            <label>
+              Model
+              <select id="openai-model">
+                <option value="gpt-4.1">GPT-4.1</option>
+                <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+              </select>
+            </label>
+            <label>
+              AI Analysis
+              <input id="openai-enable" type="checkbox" />
+            </label>
+            <span id="openai-status" class="openai-status" title="OpenAI analysis status">Ready</span>
           </div>
           <span id="status" class="status">Idle</span>
         </div>
@@ -64,6 +80,11 @@
       <section class="transcript-wrap">
         <div class="label">Transcript (live)</div>
         <div id="transcript" class="transcript" aria-live="polite" aria-atomic="false"></div>
+      </section>
+
+      <section class="ai-analysis-wrap">
+        <div class="label">AI Analysis & Follow-up Questions</div>
+        <div id="ai-analysis" class="ai-analysis" aria-live="polite" aria-atomic="false"></div>
       </section>
     </main>
   </body>
