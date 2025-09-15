@@ -303,6 +303,12 @@ async function analyzeWithOpenAI() {
     });
 
     if (aiAnalysisEl) {
+      // Remove placeholder if present
+      const placeholder = aiAnalysisEl.querySelector(".placeholder");
+      if (placeholder) {
+        placeholder.remove();
+      }
+
       aiAnalysisEl.textContent = result;
       aiAnalysisEl.scrollTop = aiAnalysisEl.scrollHeight;
     }
@@ -528,6 +534,12 @@ window.addEventListener("DOMContentLoaded", () => {
     console.log("📝 Received soniox-transcript event:", event.payload);
 
     if (transcriptEl) {
+      // Remove placeholder if present
+      const placeholder = transcriptEl.querySelector(".placeholder");
+      if (placeholder) {
+        placeholder.remove();
+      }
+
       transcriptEl.textContent = event.payload;
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
       console.log("✅ Updated transcript element with:", event.payload);
