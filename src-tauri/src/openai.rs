@@ -31,7 +31,7 @@ struct ChatMessage {
 struct ChatRequest {
   model: String,
   messages: Vec<ChatMessage>,
-  max_tokens: u32,
+  max_completion_tokens: u32,
   temperature: f32,
 }
 
@@ -43,6 +43,14 @@ struct ChatChoice {
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
   choices: Vec<ChatChoice>,
+}
+
+fn temperature_for_model(model: &str, default: f32) -> f32 {
+  if model.starts_with("gpt-5") || model.contains("gpt-5") {
+    1.0
+  } else {
+    default
+  }
 }
 
 pub async fn analyze_conversation(opts: OpenAIOptions, transcript: String, last_output: Option<String>) -> Result<String, String> {
@@ -80,7 +88,8 @@ pub async fn analyze_conversation(opts: OpenAIOptions, transcript: String, last_
   }
   messages.push(ChatMessage { role: "user".to_string(), content: user_prompt });
 
-  let request = ChatRequest { model: opts.model, messages, max_tokens: 500, temperature: 0.0 };
+  let temp = temperature_for_model(&opts.model, 0.0);
+  let request = ChatRequest { model: opts.model, messages, max_completion_tokens: 500, temperature: temp };
 
   let client = reqwest::Client::new();
 

@@ -16,6 +16,7 @@ mod audio;
 mod soniox;
 mod openai;
 mod gate;
+mod transcription;
 mod assistants;
 mod config;
 #[cfg(test)]
@@ -107,8 +108,10 @@ struct AppState {
     writer_state: Arc<Mutex<Option<AudioWriter>>>,
     vad_session_path: Arc<Mutex<Option<PathBuf>>>,
     is_writing_enabled: Arc<Mutex<bool>>, // Controls whether samples are written during pause
-    // Soniox real-time transcription session (optional)
-    soniox_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<soniox::AudioChunk>>>>,
+    // Real-time transcription session (provider-agnostic)
+    soniox_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<transcription::AudioChunk>>>>,
+    // Visible provider kind (currently Soniox), to ease future swaps
+    transcriber_kind: Arc<Mutex<Option<transcription::ProviderKind>>>,
     // Track if we're in voice detection mode vs manual recording mode
     is_voice_detection_mode: Arc<Mutex<bool>>,
     // Track if voice is currently being detected (only used in voice detection mode)
@@ -131,6 +134,7 @@ impl Default for AppState {
             vad_session_path: Arc::new(Mutex::new(None)),
             is_writing_enabled: Arc::new(Mutex::new(false)),
             soniox_tx: Arc::new(Mutex::new(None)),
+            transcriber_kind: Arc::new(Mutex::new(None)),
             is_voice_detection_mode: Arc::new(Mutex::new(false)),
             voice_currently_detected: Arc::new(Mutex::new(false)),
             assistant_manager: Arc::new(Mutex::new(AssistantManager::empty())),
@@ -965,16 +969,18 @@ fn start_soniox_session(app: tauri::AppHandle, state: State<AppState>, mut opts:
             return Err("Missing Soniox API key. Provide api_key, SONIOX_API_KEY env, or config/soniox.local.json".into());
         }
     }
-    log_to_file(&format!("Starting Soniox session with API key: {}...", &opts.api_key[..8]));
-    let handle = tauri::async_runtime::block_on(soniox::start_session(app, opts))?;
+    log_to_file(&format!("Transcription: starting provider Soniox with key: {}...", &opts.api_key[..8]));
+    let handle = tauri::async_runtime::block_on(transcription::providers::soniox_adapter::start_session(app, opts))?;
     *state.inner().soniox_tx.lock().unwrap() = Some(handle.tx);
-    log_to_file("Soniox session started successfully");
+    *state.inner().transcriber_kind.lock().unwrap() = Some(transcription::ProviderKind::Soniox);
+    log_to_file("Transcription provider started: Soniox");
     Ok(())
 }
 
 #[tauri::command]
 fn stop_soniox_session(state: State<AppState>) -> Result<(), String> {
     *state.inner().soniox_tx.lock().unwrap() = None;
+    *state.inner().transcriber_kind.lock().unwrap() = None;
     Ok(())
 }
 

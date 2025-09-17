@@ -14,7 +14,7 @@ struct ChatMessage {
 struct ChatRequest {
   model: String,
   messages: Vec<ChatMessage>,
-  max_tokens: u32,
+  max_completion_tokens: u32,
   temperature: f32,
 }
 
@@ -107,14 +107,16 @@ pub async fn should_run_gate(
     last_out_len
   ));
 
+  let model_id = opts.model.clone();
+  let temp = temperature_for_model(&model_id, 0.0);
   let request = ChatRequest {
-    model: opts.model,
+    model: model_id,
     messages: vec![
       ChatMessage { role: "system".into(), content: system_prompt },
       ChatMessage { role: "user".into(), content: user_prompt },
     ],
-    max_tokens: 120,
-    temperature: 0.0,
+    max_completion_tokens: 120,
+    temperature: temp,
   };
 
   let client = reqwest::Client::new();
@@ -171,5 +173,12 @@ pub async fn should_run_gate(
     }
   } else {
     Err("No response from OpenAI".into())
+  }
+}
+fn temperature_for_model(model: &str, default: f32) -> f32 {
+  if model.starts_with("gpt-5") || model.contains("gpt-5") {
+    1.0
+  } else {
+    default
   }
 }
