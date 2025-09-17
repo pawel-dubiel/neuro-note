@@ -26,6 +26,8 @@ src-tauri/gen/
 
 # Local config
 config/soniox.local.json
+config/config.local.json
+
 
 # Build artifacts
 *.app

@@ -17,6 +17,7 @@ let sonioxEnableChk: HTMLInputElement | null;
 let sonioxStatusEl: HTMLElement | null;
 let sonioxConnected = false;
 let openaiApiKeyInp: HTMLInputElement | null;
+let assistantSel: HTMLSelectElement | null;
 let openaiModelSel: HTMLSelectElement | null;
 let openaiEnableChk: HTMLInputElement | null;
 let openaiStatusEl: HTMLElement | null;
@@ -287,6 +288,86 @@ function updateUIForState(state: RecordingState) {
   }
 }
 
+// Load initial configuration on app startup
+async function loadInitialConfiguration() {
+  try {
+    const config = await invoke<any>("load_app_config");
+
+    // Update UI with loaded configuration
+    if (sonioxApiKeyInp) sonioxApiKeyInp.value = config.soniox.api_key || "";
+    if (sonioxEnableChk) sonioxEnableChk.checked = config.ui.enable_soniox || false;
+    if (openaiApiKeyInp) openaiApiKeyInp.value = config.openai.api_key || "";
+    if (openaiModelSel) openaiModelSel.value = config.openai.model || "gpt-4.1";
+    if (openaiEnableChk) openaiEnableChk.checked = config.ui.enable_openai || false;
+    if (formatSel) formatSel.value = config.recording.default_format || "mp3";
+    if (qualitySel) qualitySel.value = config.recording.default_quality || "verylow";
+    if (autoDetectChk) autoDetectChk.checked = config.recording.auto_detect_enabled !== false;
+    if (assistantSel) assistantSel.value = config.ui.default_assistant || "general";
+
+    console.log("✅ Initial configuration loaded successfully");
+
+    // Fetch models if OpenAI API key is available
+    if (config.openai.api_key) {
+      await fetchOpenAIModels();
+      // After fetching, ensure the configured model is selected
+      if (openaiModelSel && config.openai.model) {
+        openaiModelSel.value = config.openai.model;
+      }
+    }
+  } catch (error) {
+    console.log("ℹ️ No configuration found, using defaults:", error);
+    // This is expected on first run, continue with defaults
+  }
+}
+
+// Assistant management functions
+async function loadAssistants() {
+  try {
+    console.log("Loading assistants...");
+    await invoke("load_assistants");
+    const assistants = await invoke<any[]>("get_assistants");
+    const defaultId = await invoke<string>("get_default_assistant_id");
+
+    console.log("Loaded assistants:", assistants);
+    console.log("Default ID:", defaultId);
+
+    if (assistantSel && assistants.length > 0) {
+      // Clear loading option
+      assistantSel.innerHTML = "";
+
+      // Add assistants to selector
+      assistants.forEach(assistant => {
+        const option = document.createElement("option");
+        option.value = assistant.id;
+        option.textContent = assistant.name;
+        option.title = assistant.description;
+        assistantSel!.appendChild(option);
+        console.log(`Added assistant: ${assistant.name} (${assistant.id})`);
+      });
+
+      // Select default assistant
+      assistantSel.value = defaultId;
+      console.log("Assistant selector populated successfully");
+    } else {
+      throw new Error("No assistants returned from backend");
+    }
+  } catch (e) {
+    const errorMsg = `ASSISTANT LOADING FAILED: ${e}`;
+    console.error(errorMsg);
+
+    // Show error in UI
+    if (assistantSel) {
+      assistantSel.innerHTML = '<option value="">ERROR - Check config/assistants.json</option>';
+      assistantSel.disabled = true;
+      assistantSel.style.backgroundColor = '#ff6b6b';
+      assistantSel.style.color = 'white';
+    }
+
+    // Also throw to prevent app from continuing with broken state
+    throw new Error(errorMsg);
+  }
+}
+
 // OpenAI analysis function
 let analyzing = false;
 async function analyzeWithOpenAI(transcriptOverride?: string) {
@@ -309,7 +390,8 @@ async function analyzeWithOpenAI(transcriptOverride?: string) {
     const result = await invoke<string>("analyze_with_openai", {
       transcript: transcriptToAnalyze,
       apiKey: openaiApiKeyInp.value.trim(),
-      model: selectedModel
+      model: selectedModel,
+      assistantId: assistantSel?.value || null
     });
 
     pushAiAnswer(result);
@@ -440,7 +522,244 @@ function setupPanelToggles() {
   });
 }
 
-window.addEventListener("DOMContentLoaded", () => {
+// Configuration modal functionality
+async function setupConfigModal() {
+  const configBtn = document.querySelector("#config-btn");
+  const configModal = document.querySelector("#config-modal");
+  const configClose = document.querySelector("#config-close");
+  const configSave = document.querySelector("#config-save");
+  const configCancel = document.querySelector("#config-cancel");
+
+  // Configuration form elements
+  const configSonioxKey = document.querySelector("#config-soniox-key") as HTMLInputElement;
+  const configSonioxFormat = document.querySelector("#config-soniox-format") as HTMLSelectElement;
+  const configSonioxEnable = document.querySelector("#config-soniox-enable") as HTMLInputElement;
+  const configOpenaiKey = document.querySelector("#config-openai-key") as HTMLInputElement;
+  const configOpenaiModel = document.querySelector("#config-openai-model") as HTMLSelectElement;
+  const configOpenaiGateModel = document.querySelector("#config-openai-gate-model") as HTMLSelectElement;
+  const configOpenaiEnable = document.querySelector("#config-openai-enable") as HTMLInputElement;
+  const configRecordingFormat = document.querySelector("#config-recording-format") as HTMLSelectElement;
+  const configRecordingQuality = document.querySelector("#config-recording-quality") as HTMLSelectElement;
+  const configRecordingAuto = document.querySelector("#config-recording-auto") as HTMLInputElement;
+  const configDefaultAssistant = document.querySelector("#config-default-assistant") as HTMLSelectElement;
+
+  // Fetch models for configuration modal
+  async function fetchModelsForConfig() {
+    const apiKey = configOpenaiKey?.value.trim();
+    if (!apiKey || !configOpenaiModel || !configOpenaiGateModel) {
+      return;
+    }
+
+    try {
+      const models = await invoke<string[]>("get_openai_models", {
+        apiKey: apiKey
+      });
+
+      // Save current selections
+      const currentModel = configOpenaiModel.value;
+      const currentGateModel = configOpenaiGateModel.value;
+
+      // Clear and repopulate main model dropdown
+      configOpenaiModel.innerHTML = "";
+      models.forEach(model => {
+        const option = document.createElement("option");
+        option.value = model;
+        option.textContent = model;
+        configOpenaiModel.appendChild(option);
+      });
+
+      // Clear and repopulate gate model dropdown
+      configOpenaiGateModel.innerHTML = "";
+      models.forEach(model => {
+        const option = document.createElement("option");
+        option.value = model;
+        option.textContent = model;
+        configOpenaiGateModel.appendChild(option);
+      });
+
+      // Restore selections if they exist in the fetched models
+      if (models.includes(currentModel)) {
+        configOpenaiModel.value = currentModel;
+      } else if (models.length > 0) {
+        configOpenaiModel.value = models[0];
+      }
+
+      if (models.includes(currentGateModel)) {
+        configOpenaiGateModel.value = currentGateModel;
+      } else if (models.includes("gpt-4o-mini")) {
+        configOpenaiGateModel.value = "gpt-4o-mini";
+      } else if (models.length > 0) {
+        configOpenaiGateModel.value = models[0];
+      }
+
+      console.log(`✅ Loaded ${models.length} OpenAI models for config`);
+    } catch (error) {
+      console.error("❌ Failed to fetch models for config:", error);
+      // Keep default options if fetching fails
+    }
+  }
+
+  // Load configuration from backend
+  async function loadConfiguration() {
+    try {
+      const config = await invoke<any>("load_app_config");
+
+      // Populate form with loaded config (non-model fields first)
+      if (configSonioxKey) configSonioxKey.value = config.soniox.api_key || "";
+      if (configSonioxFormat) configSonioxFormat.value = config.soniox.audio_format || "pcm_s16le";
+      if (configSonioxEnable) configSonioxEnable.checked = config.ui.enable_soniox || false;
+
+      if (configOpenaiKey) configOpenaiKey.value = config.openai.api_key || "";
+      if (configOpenaiEnable) configOpenaiEnable.checked = config.ui.enable_openai || false;
+
+      if (configRecordingFormat) configRecordingFormat.value = config.recording.default_format || "mp3";
+      if (configRecordingQuality) configRecordingQuality.value = config.recording.default_quality || "verylow";
+      if (configRecordingAuto) configRecordingAuto.checked = config.recording.auto_detect_enabled !== false;
+
+      if (configDefaultAssistant) configDefaultAssistant.value = config.ui.default_assistant || "general";
+
+      // Fetch models first, then set configured values
+      if (configOpenaiKey?.value.trim()) {
+        await fetchModelsForConfig();
+
+        // After fetching models, set the configured model values
+        if (configOpenaiModel && config.openai.model) {
+          configOpenaiModel.value = config.openai.model;
+        }
+        if (configOpenaiGateModel && config.openai.gate_model) {
+          configOpenaiGateModel.value = config.openai.gate_model;
+        }
+      } else {
+        // No API key, set placeholder values for models
+        if (configOpenaiModel) configOpenaiModel.value = config.openai.model || "";
+        if (configOpenaiGateModel) configOpenaiGateModel.value = config.openai.gate_model || "";
+      }
+
+      console.log("✅ Configuration loaded successfully");
+    } catch (error) {
+      console.error("❌ Failed to load configuration:", error);
+      // Still allow the modal to open with default values
+    }
+  }
+
+  // Save configuration to backend
+  async function saveConfiguration() {
+    try {
+      const config = {
+        soniox: {
+          api_key: configSonioxKey?.value || "",
+          audio_format: configSonioxFormat?.value || "pcm_s16le",
+          translation: "none"
+        },
+        openai: {
+          api_key: configOpenaiKey?.value || "",
+          model: configOpenaiModel?.value || "gpt-4.1",
+          gate_model: configOpenaiGateModel?.value || "gpt-4.1-nano"
+        },
+        recording: {
+          default_format: configRecordingFormat?.value || "mp3",
+          default_quality: configRecordingQuality?.value || "verylow",
+          auto_detect_enabled: configRecordingAuto?.checked !== false
+        },
+        ui: {
+          enable_soniox: configSonioxEnable?.checked || false,
+          enable_openai: configOpenaiEnable?.checked || false,
+          default_assistant: configDefaultAssistant?.value || "general"
+        }
+      };
+
+      await invoke("save_app_config", { config });
+      console.log("✅ Configuration saved successfully");
+
+      // Update UI with saved values
+      updateUIFromConfig(config);
+
+      return true;
+    } catch (error) {
+      console.error("❌ Failed to save configuration:", error);
+      alert(`Failed to save configuration: ${error}`);
+      return false;
+    }
+  }
+
+  // Update main UI elements with configuration values
+  function updateUIFromConfig(config: any) {
+    // Update main UI form elements to reflect saved configuration
+    if (sonioxApiKeyInp) sonioxApiKeyInp.value = config.soniox.api_key || "";
+    if (sonioxEnableChk) sonioxEnableChk.checked = config.ui.enable_soniox || false;
+    if (openaiApiKeyInp) openaiApiKeyInp.value = config.openai.api_key || "";
+    if (openaiModelSel) openaiModelSel.value = config.openai.model || "gpt-4.1";
+    if (openaiEnableChk) openaiEnableChk.checked = config.ui.enable_openai || false;
+    if (formatSel) formatSel.value = config.recording.default_format || "mp3";
+    if (qualitySel) qualitySel.value = config.recording.default_quality || "verylow";
+    if (autoDetectChk) autoDetectChk.checked = config.recording.auto_detect_enabled !== false;
+    if (assistantSel) assistantSel.value = config.ui.default_assistant || "general";
+
+    // Trigger change events to update dependent UI states
+    formatSel?.dispatchEvent(new Event("change"));
+  }
+
+  // Populate assistant selector in config modal
+  async function populateConfigAssistants() {
+    try {
+      const assistants = await invoke<any[]>("get_assistants");
+      if (configDefaultAssistant && assistants.length > 0) {
+        configDefaultAssistant.innerHTML = "";
+        assistants.forEach(assistant => {
+          const option = document.createElement("option");
+          option.value = assistant.id;
+          option.textContent = assistant.name;
+          configDefaultAssistant.appendChild(option);
+        });
+      }
+    } catch (error) {
+      console.error("❌ Failed to populate config assistants:", error);
+    }
+  }
+
+  // Show modal
+  configBtn?.addEventListener("click", async () => {
+    await loadConfiguration();
+    await populateConfigAssistants();
+    configModal?.classList.remove("hidden");
+  });
+
+  // Hide modal
+  const hideModal = () => {
+    configModal?.classList.add("hidden");
+  };
+
+  configClose?.addEventListener("click", hideModal);
+  configCancel?.addEventListener("click", hideModal);
+
+  // Close modal on backdrop click
+  configModal?.addEventListener("click", (e) => {
+    if (e.target === configModal) {
+      hideModal();
+    }
+  });
+
+  // Save and close modal
+  configSave?.addEventListener("click", async () => {
+    const success = await saveConfiguration();
+    if (success) {
+      hideModal();
+    }
+  });
+
+  // Fetch models when API key changes in config modal
+  configOpenaiKey?.addEventListener("input", () => {
+    // Debounce the API call
+    clearTimeout((window as any).configModelTimeout);
+    (window as any).configModelTimeout = setTimeout(async () => {
+      if (configOpenaiKey?.value.trim().length) {
+        await fetchModelsForConfig();
+      }
+    }, 1000);
+  });
+}
+
+window.addEventListener("DOMContentLoaded", async () => {
   btnStart = document.querySelector("#btn-start");
   btnPause = document.querySelector("#btn-pause");
   btnResume = document.querySelector("#btn-resume");
@@ -455,6 +774,7 @@ window.addEventListener("DOMContentLoaded", () => {
   sonioxEnableChk = document.querySelector("#soniox-enable");
   sonioxStatusEl = document.querySelector("#soniox-status");
   openaiApiKeyInp = document.querySelector("#openai-api");
+  assistantSel = document.querySelector("#assistant-select");
   openaiModelSel = document.querySelector("#openai-model");
   openaiEnableChk = document.querySelector("#openai-enable");
   openaiStatusEl = document.querySelector("#openai-status");
@@ -462,6 +782,15 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Panel toggle functionality
   setupPanelToggles();
+
+  // Setup configuration modal
+  setupConfigModal();
+
+  // Load configuration on startup
+  await loadInitialConfiguration();
+
+  // Load assistants on startup
+  await loadAssistants();
 
   btnStart?.addEventListener("click", start);
   btnPause?.addEventListener("click", pause);
@@ -605,12 +934,12 @@ window.addEventListener("DOMContentLoaded", () => {
         // Run the lightweight gate for observability only (does not block or decide)
         if (openaiApiKeyInp?.value.trim()) {
           const key = openaiApiKeyInp.value.trim();
-          const model = 'gpt-4.1-nano';
           const lastOut = aiAnalysisEl?.textContent || '';
           // Fire and forget; update counter when done
           invoke<any>("should_run_analysis_gate", {
             apiKey: key,
-            model,
+            model: null, // Let backend use configured gate_model
+            assistantId: assistantSel?.value || null,
             currentTranscript: stable,
             previousTranscript: prevStable,
             lastOutput: lastOut,

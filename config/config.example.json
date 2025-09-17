@@ -1,0 +1,22 @@
+{
+  "soniox": {
+    "api_key": "your_soniox_api_key_here",
+    "audio_format": "pcm_s16le",
+    "translation": "none"
+  },
+  "openai": {
+    "api_key": "your_openai_api_key_here",
+    "model": "gpt-4.1",
+    "gate_model": "gpt-4.1-nano"
+  },
+  "recording": {
+    "default_format": "mp3",
+    "default_quality": "verylow",
+    "auto_detect_enabled": true
+  },
+  "ui": {
+    "enable_soniox": false,
+    "enable_openai": false,
+    "default_assistant": "general"
+  }
+}

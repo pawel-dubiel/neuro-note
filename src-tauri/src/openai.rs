@@ -203,12 +203,18 @@ pub struct GateOptions {
   pub model: String,
   #[serde(default = "default_system_prompt")]
   pub main_system_prompt: String,
+  #[serde(default = "default_gate_instructions")]
+  pub gate_instructions: String,
 }
 
 fn default_gate_model() -> String {
   // Prefer a lightweight model; fall back to a common one
   // Note: available models depend on the account
   "gpt-4.1-nano".into()
+}
+
+fn default_gate_instructions() -> String {
+  "Run when there is new, materially different user intent, a new completed question/sentence, or when prior output no longer fits. Skip for partial/unstable ASR text, trivial edits, or small punctuation changes.".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,8 +231,9 @@ pub async fn should_run_gate(opts: GateOptions, current_transcript: String, prev
 
   // Very compact prompt to keep tokens low
   let system_prompt = format!(
-    "You decide if the main assistant should re-run.\nRole: {}\nRules: Run when there is new, materially different user intent, a new completed question/sentence, or when prior output no longer fits. Skip for partial/unstable ASR text, trivial edits, or small punctuation changes. Respond with strict JSON only.",
-    opts.main_system_prompt
+    "You decide if the main assistant should re-run.\nRole: {}\nRules: {}. Respond with strict JSON only.",
+    opts.main_system_prompt,
+    opts.gate_instructions
   );
 
   let user_prompt = format!(

@@ -1,7 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use std::{
     fs::File,
-    io::{BufWriter, Write},
     path::PathBuf,
     sync::{mpsc, Arc, Mutex},
     thread,
@@ -16,10 +15,14 @@ mod utils;
 mod audio;
 mod soniox;
 mod openai;
+mod assistants;
+mod config;
 #[cfg(test)]
 mod soniox_test;
 pub use audio::AudioWriter;
 use crate::utils::log_to_file;
+use crate::assistants::{AssistantManager, Assistant};
+use crate::config::{ConfigManager, AppConfig};
 
 pub mod lame_encoder;
 
@@ -109,6 +112,10 @@ struct AppState {
     is_voice_detection_mode: Arc<Mutex<bool>>,
     // Track if voice is currently being detected (only used in voice detection mode)
     voice_currently_detected: Arc<Mutex<bool>>,
+    // Assistant manager for multiple AI assistants
+    assistant_manager: Arc<Mutex<AssistantManager>>,
+    // App configuration
+    app_config: Arc<Mutex<AppConfig>>,
 }
 
 impl Default for AppState {
@@ -125,6 +132,8 @@ impl Default for AppState {
             soniox_tx: Arc::new(Mutex::new(None)),
             is_voice_detection_mode: Arc::new(Mutex::new(false)),
             voice_currently_detected: Arc::new(Mutex::new(false)),
+            assistant_manager: Arc::new(Mutex::new(AssistantManager::empty())),
+            app_config: Arc::new(Mutex::new(AppConfig::default())),
         }
     }
 }
@@ -969,15 +978,25 @@ fn stop_soniox_session(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn analyze_with_openai(transcript: String, api_key: String, model: Option<String>) -> Result<String, String> {
+async fn analyze_with_openai(transcript: String, api_key: String, model: Option<String>, assistant_id: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     if api_key.is_empty() {
         return Err("OpenAI API key is required".to_string());
     }
 
+    let system_prompt = {
+        let manager = state.assistant_manager.lock().unwrap();
+        let assistant = if let Some(id) = assistant_id {
+            manager.get_assistant(&id).unwrap_or_else(|| manager.get_default_assistant())
+        } else {
+            manager.get_default_assistant()
+        };
+        assistant.system_prompt.clone()
+    };
+
     let opts = openai::OpenAIOptions {
         api_key,
         model: model.unwrap_or_else(|| "gpt-4.1".to_string()),
-        system_prompt: "You are an AI assistant that analyzes conversations and answers questions in the language that conversation is going on".to_string(),
+        system_prompt,
     };
 
     openai::analyze_conversation(opts, transcript).await
@@ -994,18 +1013,36 @@ struct GateDecision {
 async fn should_run_analysis_gate(
     api_key: String,
     model: Option<String>,
-    main_system_prompt: Option<String>,
+    assistant_id: Option<String>,
     current_transcript: String,
     previous_transcript: String,
     last_output: Option<String>,
+    state: State<'_, AppState>,
 ) -> Result<GateDecision, String> {
     if api_key.is_empty() {
         return Err("OpenAI API key is required".to_string());
     }
+
+    let (system_prompt, gate_instructions) = {
+        let manager = state.assistant_manager.lock().unwrap();
+        let assistant = if let Some(id) = assistant_id {
+            manager.get_assistant(&id).unwrap_or_else(|| manager.get_default_assistant())
+        } else {
+            manager.get_default_assistant()
+        };
+        (assistant.system_prompt.clone(), assistant.gate_instructions.clone())
+    };
+
+    let gate_model = {
+        let config = state.app_config.lock().unwrap();
+        config.openai.gate_model.clone()
+    };
+
     let opts = openai::GateOptions {
         api_key,
-        model: model.unwrap_or_else(|| "gpt-4.1-nano".to_string()),
-        main_system_prompt: main_system_prompt.unwrap_or_else(|| "You are an AI assistant that analyzes conversations and answers questions in the language that conversation is going on".to_string()),
+        model: model.unwrap_or(gate_model),
+        main_system_prompt: system_prompt,
+        gate_instructions,
     };
     let g = openai::should_run_gate(opts, current_transcript, previous_transcript, last_output).await?;
     Ok(GateDecision { run: g.run, reason: g.reason, confidence: g.confidence })
@@ -1013,6 +1050,80 @@ async fn should_run_analysis_gate(
 #[tauri::command]
 async fn get_openai_models(api_key: String) -> Result<Vec<String>, String> {
     openai::get_available_models(api_key).await
+}
+
+#[tauri::command]
+async fn load_assistants(state: State<'_, AppState>) -> Result<(), String> {
+    let config_path = "../config/assistants.json";
+
+    // Log current working directory for debugging
+    match std::env::current_dir() {
+        Ok(cwd) => log_to_file(&format!("Current working directory: {:?}", cwd)),
+        Err(e) => log_to_file(&format!("Failed to get current directory: {}", e)),
+    }
+
+    match AssistantManager::load_from_file(config_path) {
+        Ok(manager) => {
+            *state.assistant_manager.lock().unwrap() = manager;
+            Ok(())
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to load assistants: {}", e);
+            log_to_file(&error_msg);
+            Err(error_msg)
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_assistants(state: State<'_, AppState>) -> Result<Vec<Assistant>, String> {
+    let manager = state.assistant_manager.lock().unwrap();
+    Ok(manager.list_assistants().into_iter().cloned().collect())
+}
+
+#[tauri::command]
+async fn get_default_assistant_id(state: State<'_, AppState>) -> Result<String, String> {
+    let manager = state.assistant_manager.lock().unwrap();
+    Ok(manager.get_default_id().to_string())
+}
+
+#[tauri::command]
+async fn load_app_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
+    match ConfigManager::load_config() {
+        Ok(config) => {
+            *state.app_config.lock().unwrap() = config.clone();
+            Ok(config)
+        }
+        Err(e) => {
+            log_to_file(&format!("Failed to load app config: {}", e));
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+async fn save_app_config(state: State<'_, AppState>, config: AppConfig) -> Result<(), String> {
+    match ConfigManager::save_config(&config) {
+        Ok(()) => {
+            *state.app_config.lock().unwrap() = config;
+            Ok(())
+        }
+        Err(e) => {
+            log_to_file(&format!("Failed to save app config: {}", e));
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_app_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
+    let config = state.app_config.lock().unwrap();
+    Ok(config.clone())
+}
+
+#[tauri::command]
+async fn create_default_config() -> Result<(), String> {
+    ConfigManager::create_default_config()
 }
 
 #[derive(Serialize, Clone)]
@@ -1208,7 +1319,14 @@ pub fn run() {
             stop_soniox_session,
             analyze_with_openai,
             get_openai_models,
-            should_run_analysis_gate
+            should_run_analysis_gate,
+            load_assistants,
+            get_assistants,
+            get_default_assistant_id,
+            load_app_config,
+            save_app_config,
+            get_app_config,
+            create_default_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

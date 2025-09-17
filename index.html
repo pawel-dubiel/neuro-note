@@ -16,13 +16,16 @@
       <main class="main-content">
         <header class="app-header">
           <h1>Voice Assistant</h1>
-          <div class="panel-toggles">
-            <button id="toggle-transcript" class="panel-toggle active" title="Toggle Transcript Panel">
-              <span>📝</span> Transcript
-            </button>
-            <button id="toggle-ai" class="panel-toggle" title="Toggle AI Panel">
-              <span>🤖</span> AI Analysis
-            </button>
+          <div class="header-actions">
+            <button id="config-btn" class="config-btn" title="Configuration">⚙️</button>
+            <div class="panel-toggles">
+              <button id="toggle-transcript" class="panel-toggle active" title="Toggle Transcript Panel">
+                <span>📝</span> Transcript
+              </button>
+              <button id="toggle-ai" class="panel-toggle" title="Toggle AI Panel">
+                <span>🤖</span> AI Analysis
+              </button>
+            </div>
           </div>
         </header>
 
@@ -63,11 +66,6 @@
             </div>
 
             <div class="settings-row">
-              <label class="setting api-key-setting">
-                <span>Soniox API Key</span>
-                <input id="soniox-api" type="password" placeholder="sk_live_..." autocomplete="off" />
-              </label>
-
               <label class="setting checkbox-setting">
                 <input id="soniox-enable" type="checkbox" />
                 <span>Live Transcript</span>
@@ -77,16 +75,18 @@
             </div>
 
             <div class="settings-row">
-              <label class="setting api-key-setting">
-                <span>OpenAI API Key</span>
-                <input id="openai-api" type="password" placeholder="sk-..." autocomplete="off" />
+
+              <label class="setting">
+                <span>Assistant</span>
+                <select id="assistant-select">
+                  <option value="">Loading...</option>
+                </select>
               </label>
 
               <label class="setting">
                 <span>Model</span>
                 <select id="openai-model">
-                  <option value="gpt-4.1">GPT-4.1</option>
-                  <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                  <option value="">Loading models...</option>
                 </select>
               </label>
 
@@ -144,6 +144,107 @@
           </div>
         </div>
       </aside>
+    </div>
+
+    <!-- Hidden inputs for backward compatibility with existing code -->
+    <input id="soniox-api" type="hidden" />
+    <input id="openai-api" type="hidden" />
+
+    <!-- Configuration Modal -->
+    <div id="config-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Configuration</h2>
+          <button id="config-close" class="modal-close">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="config-section">
+            <h3>Soniox (Speech Recognition)</h3>
+            <div class="config-row">
+              <label>API Key:</label>
+              <input id="config-soniox-key" type="password" placeholder="sk_live_...">
+            </div>
+            <div class="config-row">
+              <label>Audio Format:</label>
+              <select id="config-soniox-format">
+                <option value="pcm_s16le">PCM 16-bit LE</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <label>
+                <input id="config-soniox-enable" type="checkbox">
+                Enable Live Transcript
+              </label>
+            </div>
+          </div>
+
+          <div class="config-section">
+            <h3>OpenAI (AI Analysis)</h3>
+            <div class="config-row">
+              <label>API Key:</label>
+              <input id="config-openai-key" type="password" placeholder="sk-...">
+            </div>
+            <div class="config-row">
+              <label>Model:</label>
+              <select id="config-openai-model">
+                <option value="">Enter API key to load models...</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <label>Gate Model:</label>
+              <select id="config-openai-gate-model">
+                <option value="">Enter API key to load models...</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <label>
+                <input id="config-openai-enable" type="checkbox">
+                Enable AI Analysis
+              </label>
+            </div>
+          </div>
+
+          <div class="config-section">
+            <h3>Recording Settings</h3>
+            <div class="config-row">
+              <label>Default Format:</label>
+              <select id="config-recording-format">
+                <option value="wav">WAV (lossless)</option>
+                <option value="mp3">MP3 (compressed)</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <label>Default Quality:</label>
+              <select id="config-recording-quality">
+                <option value="high">High (320 kbps)</option>
+                <option value="medium">Medium (192 kbps)</option>
+                <option value="low">Low (128 kbps)</option>
+                <option value="verylow">Very Low (64 kbps)</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <label>
+                <input id="config-recording-auto" type="checkbox">
+                Auto Detect Enabled by Default
+              </label>
+            </div>
+          </div>
+
+          <div class="config-section">
+            <h3>Assistant Settings</h3>
+            <div class="config-row">
+              <label>Default Assistant:</label>
+              <select id="config-default-assistant">
+                <option value="general">General Assistant</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="config-save" class="btn primary">Save Configuration</button>
+          <button id="config-cancel" class="btn">Cancel</button>
+        </div>
+      </div>
     </div>
   </body>
 </html>
