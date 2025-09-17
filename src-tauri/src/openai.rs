@@ -48,7 +48,11 @@ pub async fn analyze_conversation(opts: OpenAIOptions, transcript: String) -> Re
     return Ok("No conversation to analyze yet.".to_string());
   }
 
-  log_to_file(&format!("OpenAI: Analyzing transcript of {} chars", transcript.len()));
+  log_to_file(&format!(
+    "OpenAI(Model): Request model={} transcript_len={}",
+    opts.model,
+    transcript.len()
+  ));
 
   let system_prompt = opts.system_prompt.as_str();
 
@@ -92,7 +96,11 @@ pub async fn analyze_conversation(opts: OpenAIOptions, transcript: String) -> Re
         Ok(chat_response) => {
           if let Some(choice) = chat_response.choices.first() {
             let analysis = &choice.message.content;
-            log_to_file(&format!("OpenAI: Generated analysis of {} chars", analysis.len()));
+            log_to_file(&format!(
+              "OpenAI(Model): Response model={} analysis_len={}",
+              request.model,
+              analysis.len()
+            ));
             Ok(analysis.clone())
           } else {
             Err("No response from OpenAI".to_string())
@@ -191,104 +199,5 @@ fn get_model_priority(model: &str) -> u32 {
     s if s.starts_with("gpt-4") => 4,
     s if s.starts_with("gpt-3.5") => 5,
     _ => 6,
-  }
-}
-
-// Lightweight gating API: decide whether to run a full analysis
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct GateOptions {
-  pub api_key: String,
-  #[serde(default = "default_gate_model")]
-  pub model: String,
-  #[serde(default = "default_system_prompt")]
-  pub main_system_prompt: String,
-  #[serde(default = "default_gate_instructions")]
-  pub gate_instructions: String,
-}
-
-fn default_gate_model() -> String {
-  // Prefer a lightweight model; fall back to a common one
-  // Note: available models depend on the account
-  "gpt-4.1-nano".into()
-}
-
-fn default_gate_instructions() -> String {
-  "Run when there is new, materially different user intent, a new completed question/sentence, or when prior output no longer fits. Skip for partial/unstable ASR text, trivial edits, or small punctuation changes.".into()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GateJson {
-  pub run: bool,
-  pub reason: Option<String>,
-  pub confidence: Option<f32>,
-}
-
-pub async fn should_run_gate(opts: GateOptions, current_transcript: String, previous_transcript: String, last_output: Option<String>) -> Result<GateJson, String> {
-  if current_transcript.trim().is_empty() {
-    return Ok(GateJson { run: false, reason: Some("Empty transcript".into()), confidence: Some(1.0) });
-  }
-
-  // Very compact prompt to keep tokens low
-  let system_prompt = format!(
-    "You decide if the main assistant should re-run.\nRole: {}\nRules: {}. Respond with strict JSON only.",
-    opts.main_system_prompt,
-    opts.gate_instructions
-  );
-
-  let user_prompt = format!(
-    "Current transcript:\n{}\n\nPrevious transcript:\n{}\n\nLast output (optional):\n{}\n\nReturn JSON: {{\"run\": boolean, \"reason\": string, \"confidence\": number}}",
-    current_transcript,
-    previous_transcript,
-    last_output.unwrap_or_default()
-  );
-
-  let request = ChatRequest {
-    model: opts.model,
-    messages: vec![
-      ChatMessage { role: "system".into(), content: system_prompt },
-      ChatMessage { role: "user".into(), content: user_prompt },
-    ],
-    max_tokens: 120,
-    temperature: 0.0,
-  };
-
-  let client = reqwest::Client::new();
-  let resp = client
-    .post("https://api.openai.com/v1/chat/completions")
-    .header("Authorization", format!("Bearer {}", opts.api_key))
-    .header("Content-Type", "application/json")
-    .json(&request)
-    .send()
-    .await
-    .map_err(|e| format!("Failed to connect to OpenAI: {}", e))?;
-
-  let status = resp.status();
-  if !status.is_success() {
-    let error_text = resp.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-    log_to_file(&format!("OpenAI(Gate): API error {}: {}", status, error_text));
-    return Err(format!("OpenAI API error: {}", status));
-  }
-
-  let chat: ChatResponse = resp
-    .json()
-    .await
-    .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
-
-  if let Some(choice) = chat.choices.first() {
-    let content = choice.message.content.trim();
-    // Attempt to parse strict JSON; if fails, fallback to simple heuristic
-    match serde_json::from_str::<GateJson>(content) {
-      Ok(g) => Ok(g),
-      Err(e) => {
-        log_to_file(&format!("OpenAI(Gate): JSON parse error: {} | content: {}", e, content));
-        // Heuristic fallback: trigger if there is a growth of >= 50 chars and ends with sentence punctuation
-        let ends = current_transcript.trim_end().ends_with(['.', '!', '?']);
-        let growth = current_transcript.len().saturating_sub(previous_transcript.len());
-        Ok(GateJson { run: ends && growth >= 50, reason: Some("Fallback heuristic".into()), confidence: Some(0.3) })
-      }
-    }
-  } else {
-    Err("No response from OpenAI".into())
   }
 }

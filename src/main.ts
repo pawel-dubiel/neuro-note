@@ -32,6 +32,9 @@ let lastAnalyzedStable = "";
 let lastAnalysisAt = 0;
 let gateCountEl: HTMLElement | null;
 let gateRuns = 0;
+let modelCountEl: HTMLElement | null;
+let modelRuns = 0;
+let gateLastEl: HTMLElement | null;
 let currentStateType: RecordingState["type"] = "Idle";
 let currentPath: string | null = null;
 let isVoiceMode = false;
@@ -387,6 +390,9 @@ async function analyzeWithOpenAI(transcriptOverride?: string) {
     }
 
     const selectedModel = openaiModelSel?.value || "gpt-4.1";
+    // Count a real model request before invoking
+    modelRuns += 1;
+    if (modelCountEl) modelCountEl.textContent = `Model: ${modelRuns}`;
     const result = await invoke<string>("analyze_with_openai", {
       transcript: transcriptToAnalyze,
       apiKey: openaiApiKeyInp.value.trim(),
@@ -878,6 +884,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Soniox transcript events
   const transcriptEl = document.getElementById("transcript");
   gateCountEl = document.getElementById("gate-count");
+  modelCountEl = document.getElementById("model-count");
+  gateLastEl = document.getElementById("gate-last");
   aiPrevBtn = document.getElementById("ai-prev") as HTMLButtonElement | null;
   aiNextBtn = document.getElementById("ai-next") as HTMLButtonElement | null;
   aiPosEl = document.getElementById("ai-pos");
@@ -931,12 +939,15 @@ window.addEventListener("DOMContentLoaded", async () => {
       ) {
         console.log(`🔎 Running gated analysis (len=${stable.length}, Δ=${delta})`);
 
-        // Run the lightweight gate for observability only (does not block or decide)
+        // Use lightweight gate to decide whether to invoke main model (strict)
         if (openaiApiKeyInp?.value.trim()) {
           const key = openaiApiKeyInp.value.trim();
           const lastOut = aiAnalysisEl?.textContent || '';
-          // Fire and forget; update counter when done
-          invoke<any>("should_run_analysis_gate", {
+          // Count a real gate request before invoking
+          gateRuns += 1;
+          if (gateCountEl) gateCountEl.textContent = `Gate: ${gateRuns}`;
+
+          invoke<{ run: boolean; instruction?: string; reason?: string; confidence?: number }>("should_run_analysis_gate", {
             apiKey: key,
             model: null, // Let backend use configured gate_model
             assistantId: assistantSel?.value || null,
@@ -944,19 +955,32 @@ window.addEventListener("DOMContentLoaded", async () => {
             previousTranscript: prevStable,
             lastOutput: lastOut,
           }).then((res) => {
-            gateRuns += 1;
-            if (gateCountEl) gateCountEl.textContent = `Gate: ${gateRuns}`;
             console.log("Gate decision:", res);
+            if (gateLastEl) {
+              const decision = res?.instruction || (res?.run ? "NEEDED" : "NOT_NEEDED");
+              const conf = typeof res?.confidence === 'number' ? ` (${(res.confidence * 100).toFixed(0)}%)` : '';
+              gateLastEl.textContent = `Decision: ${decision}`;
+              gateLastEl.setAttribute('title', res?.reason ? `${res.reason}${conf}` : `Gate decision${conf}`);
+            }
+            if (res?.run) {
+              lastAnalyzedStable = stable;
+              lastAnalysisAt = now;
+              analyzeWithOpenAI(stable);
+            } else {
+              console.log("⏭️ Skipping analysis due to gate decision.");
+            }
           }).catch((err) => {
-            gateRuns += 1; // still count attempted runs
-            if (gateCountEl) gateCountEl.textContent = `Gate: ${gateRuns}`;
             console.warn("Gate error:", err);
+            if (gateLastEl) {
+              gateLastEl.textContent = `Decision: ERROR`;
+              gateLastEl.setAttribute('title', String(err));
+            }
+            // Strict mode: do not run analysis on gate error
           });
+        } else {
+          // Strict mode: no gate key => do not analyze
+          console.warn("Gate strict: missing OpenAI API key; skipping analysis.");
         }
-
-        lastAnalyzedStable = stable;
-        lastAnalysisAt = now;
-        analyzeWithOpenAI(stable);
       }
     }
 

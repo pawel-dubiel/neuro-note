@@ -15,6 +15,7 @@ mod utils;
 mod audio;
 mod soniox;
 mod openai;
+mod gate;
 mod assistants;
 mod config;
 #[cfg(test)]
@@ -1005,6 +1006,7 @@ async fn analyze_with_openai(transcript: String, api_key: String, model: Option<
 #[derive(serde::Serialize)]
 struct GateDecision {
     run: bool,
+    instruction: Option<String>,
     reason: Option<String>,
     confidence: Option<f32>,
 }
@@ -1038,14 +1040,14 @@ async fn should_run_analysis_gate(
         config.openai.gate_model.clone()
     };
 
-    let opts = openai::GateOptions {
+    let opts = gate::GateOptions {
         api_key,
         model: model.unwrap_or(gate_model),
         main_system_prompt: system_prompt,
         gate_instructions,
     };
-    let g = openai::should_run_gate(opts, current_transcript, previous_transcript, last_output).await?;
-    Ok(GateDecision { run: g.run, reason: g.reason, confidence: g.confidence })
+    let g = gate::should_run_gate(opts, current_transcript, previous_transcript, last_output).await?;
+    Ok(GateDecision { run: g.run, instruction: g.instruction, reason: g.reason, confidence: g.confidence })
 }
 #[tauri::command]
 async fn get_openai_models(api_key: String) -> Result<Vec<String>, String> {
