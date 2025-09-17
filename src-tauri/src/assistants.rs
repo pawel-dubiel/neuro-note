@@ -11,6 +11,8 @@ pub struct Assistant {
     pub description: String,
     pub system_prompt: String,
     pub gate_instructions: String,
+    #[serde(default)]
+    pub output_policy: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

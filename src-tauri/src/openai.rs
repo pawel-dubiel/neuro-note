@@ -9,6 +9,8 @@ pub struct OpenAIOptions {
   pub model: String,
   #[serde(default = "default_system_prompt")]
   pub system_prompt: String,
+  #[serde(default)]
+  pub output_policy: String,
 }
 
 fn default_model() -> String {
@@ -43,36 +45,42 @@ struct ChatResponse {
   choices: Vec<ChatChoice>,
 }
 
-pub async fn analyze_conversation(opts: OpenAIOptions, transcript: String) -> Result<String, String> {
+pub async fn analyze_conversation(opts: OpenAIOptions, transcript: String, last_output: Option<String>) -> Result<String, String> {
   if transcript.trim().is_empty() {
     return Ok("No conversation to analyze yet.".to_string());
   }
 
+  let last_out_len = last_output.as_ref().map(|s| s.len()).unwrap_or(0);
   log_to_file(&format!(
-    "OpenAI(Model): Request model={} transcript_len={}",
+    "OpenAI(Model): Request model={} transcript_len={} last_out_len={}",
     opts.model,
-    transcript.len()
+    transcript.len(),
+    last_out_len
   ));
 
-  let system_prompt = opts.system_prompt.as_str();
-
-  let user_prompt = format!("Please analyze this conversation transcript and answer recent question\n\n{}", transcript);
-
-  let request = ChatRequest {
-    model: opts.model,
-    messages: vec![
-      ChatMessage {
-        role: "system".to_string(),
-        content: system_prompt.to_string(),
-      },
-      ChatMessage {
-        role: "user".to_string(),
-        content: user_prompt,
-      },
-    ],
-    max_tokens: 500,
-    temperature: 0.0,
+  // Compose system prompt with any assistant-defined output policy from config
+  let effective_system_prompt = if opts.output_policy.trim().is_empty() {
+    opts.system_prompt.clone()
+  } else {
+    format!("{}\n\n{}", opts.system_prompt, opts.output_policy)
   };
+
+  let user_prompt = format!(
+    "Analyze the latest user intent in the transcript.\n- If a previous assistant answer is shown above, DO NOT repeat it.\n- Only add new information, corrections, or next steps relevant to the newest utterances.\n- Be concise and avoid duplication.\n\n{}",
+    transcript
+  );
+
+  let mut messages = vec![
+    ChatMessage { role: "system".to_string(), content: effective_system_prompt },
+  ];
+  if let Some(prev) = last_output {
+    if !prev.trim().is_empty() {
+      messages.push(ChatMessage { role: "assistant".to_string(), content: format!("Previous assistant answer (for context):\n{}", prev) });
+    }
+  }
+  messages.push(ChatMessage { role: "user".to_string(), content: user_prompt });
+
+  let request = ChatRequest { model: opts.model, messages, max_tokens: 500, temperature: 0.0 };
 
   let client = reqwest::Client::new();
 

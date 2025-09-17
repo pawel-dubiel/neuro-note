@@ -390,6 +390,7 @@ async function analyzeWithOpenAI(transcriptOverride?: string) {
     }
 
     const selectedModel = openaiModelSel?.value || "gpt-4.1";
+    const lastAnswer = aiAnswers.length > 0 ? aiAnswers[aiAnswers.length - 1] : null;
     // Count a real model request before invoking
     modelRuns += 1;
     if (modelCountEl) modelCountEl.textContent = `Model: ${modelRuns}`;
@@ -397,7 +398,8 @@ async function analyzeWithOpenAI(transcriptOverride?: string) {
       transcript: transcriptToAnalyze,
       apiKey: openaiApiKeyInp.value.trim(),
       model: selectedModel,
-      assistantId: assistantSel?.value || null
+      assistantId: assistantSel?.value || null,
+      lastOutput: lastAnswer,
     });
 
     pushAiAnswer(result);

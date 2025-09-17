@@ -979,28 +979,29 @@ fn stop_soniox_session(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn analyze_with_openai(transcript: String, api_key: String, model: Option<String>, assistant_id: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+async fn analyze_with_openai(transcript: String, api_key: String, model: Option<String>, assistant_id: Option<String>, last_output: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
     if api_key.is_empty() {
         return Err("OpenAI API key is required".to_string());
     }
 
-    let system_prompt = {
+    let (system_prompt, output_policy) = {
         let manager = state.assistant_manager.lock().unwrap();
         let assistant = if let Some(id) = assistant_id {
             manager.get_assistant(&id).unwrap_or_else(|| manager.get_default_assistant())
         } else {
             manager.get_default_assistant()
         };
-        assistant.system_prompt.clone()
+        (assistant.system_prompt.clone(), assistant.output_policy.clone())
     };
 
     let opts = openai::OpenAIOptions {
         api_key,
         model: model.unwrap_or_else(|| "gpt-4.1".to_string()),
         system_prompt,
+        output_policy,
     };
 
-    openai::analyze_conversation(opts, transcript).await
+    openai::analyze_conversation(opts, transcript, last_output).await
 }
 
 #[derive(serde::Serialize)]
