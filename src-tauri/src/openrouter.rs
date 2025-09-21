@@ -1,4 +1,4 @@
-use crate::{gate::GateJson, openai, utils::log_to_file};
+use crate::{assistants::render_user_prompt, gate::GateJson, openai, utils::log_to_file};
 use openrouter_rs::{
     api::chat::{ChatCompletionRequest, Message},
     api::credits::CreditsData,
@@ -40,6 +40,7 @@ pub fn build_client(api_key: &str) -> Result<OpenRouterClient, String> {
 pub fn compose_messages(
     system_prompt: &str,
     output_policy: &str,
+    user_prompt_template: &str,
     transcript: &str,
     last_output: Option<&str>,
 ) -> Vec<Message> {
@@ -60,10 +61,7 @@ pub fn compose_messages(
         }
     }
 
-    let user_prompt = format!(
-        "Analyze the latest user intent in the transcript.\n- If a previous assistant answer is shown above, DO NOT repeat it.\n- Only add new information, corrections, or next steps relevant to the newest utterances.\n- Be concise and avoid duplication.\n\n{}",
-        transcript
-    );
+    let user_prompt = render_user_prompt(user_prompt_template, transcript);
 
     messages.push(Message::new(Role::User, &user_prompt));
     messages
