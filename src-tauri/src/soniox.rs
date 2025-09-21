@@ -34,9 +34,15 @@ pub struct AudioChunk {
     pub sample_rate: u32,
 }
 
+#[derive(Debug, Clone)]
+pub enum SonioxControl {
+    ClearTranscript,
+}
+
 #[derive(Clone)]
 pub struct SonioxHandle {
     pub tx: mpsc::Sender<AudioChunk>,
+    pub ctrl: mpsc::Sender<SonioxControl>,
 }
 
 impl SonioxHandle {
@@ -51,6 +57,7 @@ pub async fn start_session(
 ) -> Result<SonioxHandle, String> {
     // Channel from audio thread to WS task
     let (tx, mut rx) = mpsc::channel::<AudioChunk>(32);
+    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<SonioxControl>(8);
 
     let app_for_task = app.clone();
     let opts_for_task = opts.clone();
@@ -104,8 +111,10 @@ pub async fn start_session(
         }
         let _ = app_for_task.emit("soniox-status", "config_sent");
 
-        // Buffers for rendering tokens
+        // Buffers for rendering tokens and tracking currently emitted text
         let mut final_tokens: Vec<serde_json::Value> = Vec::new();
+        let mut last_emitted_text: String = String::new();
+        let mut suppress_repeat: Option<String> = None;
 
         // Reader task: receive messages and render transcript
         let (mut ws_sink, mut ws_reader) = ws.split();
@@ -114,6 +123,20 @@ pub async fn start_session(
         let mut sent_bytes: usize = 0;
         loop {
             select! {
+              cmd = ctrl_rx.recv() => {
+                if let Some(control) = cmd {
+                    match control {
+                        SonioxControl::ClearTranscript => {
+                            log_to_file("Soniox: clearing transcript tokens via control command");
+                            if suppress_repeat.is_none() {
+                                suppress_repeat = Some(last_emitted_text.clone());
+                            }
+                            final_tokens.clear();
+                            last_emitted_text.clear();
+                        }
+                    }
+                }
+              }
               // Audio: convert and send binary frames
               maybe_chunk = rx.recv() => {
                 if let Some(chunk) = maybe_chunk {
@@ -169,12 +192,22 @@ pub async fn start_session(
 
                       // If we have any meaningful content, emit it
                       if has_tokens || !text.is_empty() {
+                        if suppress_repeat.is_some() {
+                          if suppress_repeat.as_ref().map(|s| s.as_str()) == Some(text.as_str()) {
+                            // Skip emitting the same text immediately after a clear request
+                            continue;
+                          } else {
+                            suppress_repeat = None;
+                          }
+                        }
                         log_to_file(&format!("Emitting transcript: '{}'", text));
+                        last_emitted_text = text.clone();
                         let _ = app_for_task.emit("soniox-transcript", text);
                       } else {
                         // Debug: Even emit empty responses to see if events are working
                         log_to_file("Received Soniox response with no tokens");
                         let _ = app_for_task.emit("soniox-transcript", "[no speech detected]");
+                        last_emitted_text = "[no speech detected]".to_string();
                       }
 
                       if res.get("finished").and_then(|f| f.as_bool()).unwrap_or(false) { let _ = app_for_task.emit("soniox-status", "finished"); break; }
@@ -198,7 +231,7 @@ pub async fn start_session(
         let _ = app_for_task.emit("soniox-status", "ended");
     });
 
-    Ok(SonioxHandle { tx })
+    Ok(SonioxHandle { tx, ctrl: ctrl_tx })
 }
 
 pub fn render_tokens(
