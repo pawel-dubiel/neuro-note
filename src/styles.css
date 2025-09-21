@@ -104,6 +104,16 @@ body {
   font-size: 14px;
 }
 
+.panel-toggle.clear-history {
+  color: #b23c17;
+  border-color: rgba(255, 107, 53, 0.4);
+}
+
+.panel-toggle.clear-history:hover {
+  background: #fff4ef;
+  border-color: rgba(255, 107, 53, 0.6);
+}
+
 /* Controls Section */
 .controls-section {
   flex: 1;
