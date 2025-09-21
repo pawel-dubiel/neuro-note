@@ -1,5 +1,7 @@
 use tokio::sync::mpsc;
 
+use crate::soniox::SonioxControl;
+
 // Public, shared audio chunk type for all providers. For now, alias Soniox's.
 pub type AudioChunk = crate::soniox::AudioChunk;
 
@@ -7,6 +9,7 @@ pub type AudioChunk = crate::soniox::AudioChunk;
 #[derive(Clone)]
 pub struct TranscriptionHandle {
     pub tx: mpsc::Sender<AudioChunk>,
+    pub ctrl: Option<mpsc::Sender<SonioxControl>>,
 }
 
 // Enum of known providers for visibility in state/logs.
@@ -35,7 +38,10 @@ pub mod providers {
             opts: SonioxOptions,
         ) -> Result<TranscriptionHandle, String> {
             let handle = soniox::start_session(app, opts).await?;
-            Ok(TranscriptionHandle { tx: handle.tx })
+            Ok(TranscriptionHandle {
+                tx: handle.tx,
+                ctrl: Some(handle.ctrl),
+            })
         }
     }
 }

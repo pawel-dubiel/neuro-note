@@ -25,6 +25,7 @@ mod transcription;
 mod utils;
 use crate::assistants::{Assistant, AssistantManager};
 use crate::config::{AiProvider, AppConfig, ConfigManager};
+use crate::soniox::SonioxControl;
 use crate::utils::log_to_file;
 pub use audio::AudioWriter;
 
@@ -112,6 +113,7 @@ struct AppState {
     is_writing_enabled: Arc<Mutex<bool>>, // Controls whether samples are written during pause
     // Real-time transcription session (provider-agnostic)
     soniox_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<transcription::AudioChunk>>>>,
+    soniox_ctrl: Arc<Mutex<Option<tokio::sync::mpsc::Sender<SonioxControl>>>>,
     // Visible provider kind (currently Soniox), to ease future swaps
     transcriber_kind: Arc<Mutex<Option<transcription::ProviderKind>>>,
     // Track if we're in voice detection mode vs manual recording mode
@@ -136,6 +138,7 @@ impl Default for AppState {
             vad_session_path: Arc::new(Mutex::new(None)),
             is_writing_enabled: Arc::new(Mutex::new(false)),
             soniox_tx: Arc::new(Mutex::new(None)),
+            soniox_ctrl: Arc::new(Mutex::new(None)),
             transcriber_kind: Arc::new(Mutex::new(None)),
             is_voice_detection_mode: Arc::new(Mutex::new(false)),
             voice_currently_detected: Arc::new(Mutex::new(false)),
@@ -1193,6 +1196,11 @@ fn start_soniox_session(
         transcription::providers::soniox_adapter::start_session(app, opts),
     )?;
     *state.inner().soniox_tx.lock().unwrap() = Some(handle.tx);
+    if let Some(ctrl) = handle.ctrl {
+        *state.inner().soniox_ctrl.lock().unwrap() = Some(ctrl);
+    } else {
+        *state.inner().soniox_ctrl.lock().unwrap() = None;
+    }
     *state.inner().transcriber_kind.lock().unwrap() = Some(transcription::ProviderKind::Soniox);
     log_to_file("Transcription provider started: Soniox");
     Ok(())
@@ -1201,7 +1209,27 @@ fn start_soniox_session(
 #[tauri::command]
 fn stop_soniox_session(state: State<AppState>) -> Result<(), String> {
     *state.inner().soniox_tx.lock().unwrap() = None;
+    *state.inner().soniox_ctrl.lock().unwrap() = None;
     *state.inner().transcriber_kind.lock().unwrap() = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_transcript_state(state: State<'_, AppState>) -> Result<(), String> {
+    let sender = state
+        .inner()
+        .soniox_ctrl
+        .lock()
+        .map_err(|_| "Failed to lock Soniox control channel".to_string())?
+        .clone();
+
+    if let Some(ctrl) = sender {
+        ctrl.send(SonioxControl::ClearTranscript)
+            .await
+            .map_err(|e| format!("Failed to clear transcript state: {}", e))?;
+        log_to_file("Transcription control: cleared transcript state");
+    }
+
     Ok(())
 }
 
@@ -1811,6 +1839,7 @@ pub fn run() {
             get_recording_state,
             start_soniox_session,
             stop_soniox_session,
+            clear_transcript_state,
             stream_ai_analysis,
             analyze_with_openai,
             get_ai_models,
