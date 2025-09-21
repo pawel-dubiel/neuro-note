@@ -84,7 +84,7 @@ pub async fn analyze_conversation(
 
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
-        content: effective_system_prompt,
+        content: effective_system_prompt.clone(),
     }];
     if let Some(prev) = last_output {
         if !prev.trim().is_empty() {
@@ -99,7 +99,15 @@ pub async fn analyze_conversation(
         content: user_prompt,
     });
 
+    if let Some(user_msg) = messages.iter().find(|m| m.role == "user") {
+        log_to_file(&format!(
+            "OpenAI(Main): Prompt system=<<<{}>>> user=<<<{}>>>",
+            effective_system_prompt, user_msg.content
+        ));
+    }
+
     let temp = temperature_for_model(&opts.model, 0.0);
+    let model_name = opts.model.clone();
     let request = ChatRequest {
         model: opts.model,
         messages,
@@ -132,9 +140,10 @@ pub async fn analyze_conversation(
                 Ok(chat_response) => {
                     if let Some(choice) = chat_response.choices.first() {
                         let analysis = &choice.message.content;
+                        log_to_file(&format!("OpenAI(Main): Response=<<<{}>>>", analysis));
                         log_to_file(&format!(
                             "OpenAI(Model): Response model={} analysis_len={}",
-                            request.model,
+                            model_name,
                             analysis.len()
                         ));
                         Ok(analysis.clone())

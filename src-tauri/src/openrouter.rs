@@ -74,6 +74,16 @@ pub fn build_chat_request(
     messages: Vec<Message>,
     max_tokens: u32,
 ) -> Result<ChatCompletionRequest, String> {
+    if let Some(system_msg) = messages.iter().find(|m| matches!(m.role, Role::System)) {
+        let user_msg = messages.iter().rev().find(|m| matches!(m.role, Role::User));
+        log_to_file(&format!(
+            "OpenRouter(Main): Prompt model={} system=<<<{}>>> user=<<<{}>>>",
+            model,
+            system_msg.content,
+            user_msg.map(|m| m.content.as_str()).unwrap_or("")
+        ));
+    }
+
     let temperature = openai::temperature_for_model(model, 0.0) as f64;
     ChatCompletionRequest::builder()
         .model(model.to_string())
@@ -149,6 +159,11 @@ pub async fn run_gate(
     );
 
     log_to_file(&format!(
+        "OpenRouter(Gate): Prompt system=<<<{}>>> user=<<<{}>>>",
+        system_prompt, user_prompt
+    ));
+
+    log_to_file(&format!(
         "OpenRouter(Gate): Request model={} current_len={} previous_len={} last_out_len={}",
         model,
         current_transcript.len(),
@@ -179,6 +194,7 @@ pub async fn run_gate(
 
     if let Some(choice) = response.choices.first() {
         let content = choice.content().unwrap_or_default().trim().to_string();
+        log_to_file(&format!("OpenRouter(Gate): Raw response=<<<{}>>>", content));
 
         match serde_json::from_str::<GateJson>(&content) {
             Ok(mut g) => {

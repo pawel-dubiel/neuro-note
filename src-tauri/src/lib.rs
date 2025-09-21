@@ -1248,6 +1248,16 @@ async fn stream_ai_analysis(
     };
 
     let trimmed_transcript = transcript.trim().to_string();
+
+    log_to_file(&format!(
+        "AI(Main): provider={:?} model={} request_id={} transcript_len={} last_output_len={}",
+        provider_kind,
+        selected_model,
+        request_id,
+        trimmed_transcript.len(),
+        last_output.as_ref().map(|s| s.len()).unwrap_or(0)
+    ));
+
     if trimmed_transcript.is_empty() {
         let payload = AiStreamChunk {
             request_id,
@@ -1271,6 +1281,10 @@ async fn stream_ai_analysis(
             match openai::analyze_conversation(opts, trimmed_transcript, last_output.clone()).await
             {
                 Ok(result) => {
+                    log_to_file(&format!(
+                        "AI(Main): provider=OpenAI request_id={} final=<<<{}>>>",
+                        request_id, result
+                    ));
                     let payload = AiStreamChunk {
                         request_id,
                         segment: None,
@@ -1317,6 +1331,10 @@ async fn stream_ai_analysis(
                                 continue;
                             }
                             full_text.push_str(content);
+                            log_to_file(&format!(
+                                "OpenRouter(Main): request_id={} chunk=<<<{}>>>",
+                                request_id, content
+                            ));
                             let payload = AiStreamChunk {
                                 request_id: request_id.clone(),
                                 segment: Some(content.to_string()),
@@ -1348,6 +1366,11 @@ async fn stream_ai_analysis(
                 final_text: Some(full_text),
                 done: true,
             };
+            log_to_file(&format!(
+                "OpenRouter(Main): request_id={} final=<<<{}>>>",
+                payload.request_id,
+                payload.final_text.as_deref().unwrap_or("")
+            ));
             app.emit("ai-analysis-stream", payload)
                 .map_err(|e| format!("Failed to emit AI stream event: {}", e))?;
             Ok(())

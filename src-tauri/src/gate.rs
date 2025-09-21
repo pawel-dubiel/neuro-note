@@ -105,6 +105,11 @@ pub async fn should_run_gate(
   );
 
     log_to_file(&format!(
+        "OpenAI(Gate): Prompt system=<<<{}>>> user=<<<{}>>>",
+        system_prompt, user_prompt
+    ));
+
+    log_to_file(&format!(
         "OpenAI(Gate): Request model={} current_len={} previous_len={} last_out_len={}",
         opts.model,
         current_transcript.len(),
@@ -160,6 +165,7 @@ pub async fn should_run_gate(
 
     if let Some(choice) = chat.choices.first() {
         let content = choice.message.content.trim();
+        log_to_file(&format!("OpenAI(Gate): Raw response=<<<{}>>>", content));
         // Attempt to parse strict JSON; if fails, fallback to simple heuristic
         match serde_json::from_str::<GateJson>(content) {
             Ok(mut g) => {
