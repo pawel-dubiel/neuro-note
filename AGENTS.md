@@ -1,51 +1,34 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `src/` – Frontend (TypeScript, Vite). Assets under `src/assets/`.
-- `src-tauri/` – Backend (Rust, Tauri). Library `assistant_lib`, binaries, config, and tests in `src-tauri/tests/`.
-- `src-tauri/src/soniox.rs` – Soniox API integration for real-time speech-to-text transcription.
-- `src-tauri/src/utils.rs` – Utility functions including debug logging system.
-- `config/` – Configuration files (Soniox API credentials and settings).
-- `dist/` – Built frontend artifacts consumed by Tauri.
-- `debug_soniox.js` – Browser console debugging tool for Soniox integration testing.
-- `index.html`, `vite.config.ts`, `tsconfig.json` – Frontend entry and tooling.
+- `src/` hosts the Vite + TypeScript frontend. Place assets under `src/assets/` and keep logic thin; heavy lifting lives in Rust.
+- `src-tauri/` contains the Rust backend. Keep shared helpers in `assistant_lib` and add integration tests under `src-tauri/tests/`.
+- `src-tauri/src/soniox.rs` manages Soniox real-time transcription; `src-tauri/src/utils.rs` centralizes logging and cross-cutting helpers.
+- Configuration files live in `config/`; never commit secrets. Built artifacts land in `dist/` and are consumed by Tauri.
 
 ## Build, Test, and Development Commands
-- `npm run dev` – Run Vite dev server for the web frontend.
-- `npm run tauri dev` – Launch the desktop app with live reload (frontend + Rust).
-- `npm run build` – Type-check (`tsc`) and build the frontend to `dist/`.
-- `npm run preview` – Serve the built frontend locally.
-- Rust tests: `cargo test --manifest-path src-tauri/Cargo.toml`.
-- Package app: `npm run tauri build`.
+- `npm run dev` starts the Vite dev server for quick frontend iteration.
+- `npm run tauri dev` launches the Tauri desktop app with hot reload across Rust and frontend layers.
+- `npm run build` type-checks via `tsc` and outputs the production bundle to `dist/`.
+- `cargo test --manifest-path src-tauri/Cargo.toml` executes Rust unit and integration tests.
+- `npm run tauri build` packages the desktop application; ensure prior steps pass.
 
 ## Coding Style & Naming Conventions
-- TypeScript/CSS: 2-space indentation; prefer lowercase file names (`main.ts`, `styles.css`), hyphenate multiword names (`audio-recorder.ts`).
-- Rust: follow rustfmt defaults; snake_case for functions/modules, CamelCase for types. Run `cargo fmt` and `cargo clippy` before PRs.
-- Imports: use relative paths within `src/`; group std/3rd-party/local in Rust.
-- Avoid magic numbers; co-locate small helpers near usage.
+- TypeScript/CSS use 2-space indentation and lowercase-hyphenated filenames (e.g., `audio-recorder.ts`).
+- Rust follows rustfmt defaults; modules/functions in `snake_case`, types in `CamelCase`.
+- Group imports logically (std, third-party, local) and colocate small helpers near usage. Run `cargo fmt` and `cargo clippy` before submitting work.
 
 ## Testing Guidelines
-- Rust integration tests live in `src-tauri/tests/*.rs` (e.g., `audio_writer_tests.rs`). Run with `cargo test --manifest-path src-tauri/Cargo.toml`.
-- Soniox module includes unit tests for audio processing functions (`test_render_tokens_basic`, `test_to_pcm_identity_when_16k_mono`, etc.).
-- Prefer small, deterministic tests for audio/encoding logic; assert file creation/size over brittle byte-for-byte equality.
-- Frontend currently has no test harness; keep logic minimal and push heavy lifting to Rust where it's testable.
-- Use `debug_soniox.js` in browser console for manual testing of Soniox integration and event flow.
+- Maintain deterministic Rust tests in `src-tauri/tests/`; prefer asserting on file presence or sizes over raw byte equality.
+- Soniox audio helpers include unit tests (`test_render_tokens_basic`, `test_to_pcm_identity_when_16k_mono`, etc.); extend them when adding audio transforms.
+- Frontend lacks a formal harness—push testable logic into Rust and validate manually with `debug_soniox.js` when touching WebSocket flows.
 
 ## Commit & Pull Request Guidelines
-- Commits: imperative, concise subject (e.g., "Add MP3 encoding support"); group related changes.
-- PRs: clear description, linked issue(s), reproduction steps; include screenshots/gifs for UI changes and platform notes (macOS/Windows/Linux).
-- CI hygiene: code formatted (`cargo fmt`), clippy clean, frontend builds locally (`npm run build`).
+- Use concise, imperative commit subjects (e.g., `Add MP3 encoding support`). Group related changes into cohesive commits.
+- PRs should describe the change, link issues, outline reproduction steps, and include platform-specific notes or UI screenshots.
+- Confirm `cargo fmt`, `cargo clippy`, and `npm run build` all succeed before requesting review.
 
 ## Security & Configuration Tips
-- Do not commit secrets or OS-specific paths. Tauri identifier is `com.pawel.assistant` (see `src-tauri/tauri.conf.json`).
-- Use `invoke` only for vetted commands; validate inputs crossing TS↔Rust boundaries.
-- Soniox API credentials should be stored in `config/soniox.local.json` (gitignored) - never commit API keys.
-- Debug logs are written to `~/Documents/vad_debug.log` for troubleshooting audio and transcription issues.
-
-## Audio & Transcription Architecture Notes
-- The application supports dual recording modes: manual recording and Voice Activity Detection (VAD).
-- Soniox integration works in both modes by streaming continuous audio for optimal speech recognition context.
-- Audio streams are handled differently: manual recording uses `build_stream_*` functions, VAD uses `process_chunk` closure.
-- Both paths include Soniox audio transmission for consistent transcription functionality.
-- Audio format conversion ensures compatibility: F32→I16, U16→I16, resampling to 16kHz mono PCM for Soniox.
-- WebSocket connection managed asynchronously with Tokio for real-time streaming without blocking audio processing.
+- Store Soniox credentials in `config/soniox.local.json` (gitignored) and never embed keys in source.
+- The Tauri identifier is `com.pawel.assistant`; keep it consistent across configuration files.
+- Debug logs write to `~/Documents/vad_debug.log`. Inspect them when diagnosing audio, VAD, or transcription issues.

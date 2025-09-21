@@ -2,7 +2,7 @@ use std::os::raw::{c_int, c_void};
 
 pub type LamePtr = *mut c_void;
 
-#[link(name="mp3lame")]
+#[link(name = "mp3lame")]
 extern "C" {
     pub fn lame_init() -> LamePtr;
     pub fn lame_close(ptr: LamePtr) -> c_int;
@@ -15,8 +15,13 @@ extern "C" {
     pub fn lame_set_brate(ptr: LamePtr, quality: c_int) -> c_int;
     pub fn lame_get_brate(ptr: LamePtr) -> c_int;
     pub fn lame_init_params(ptr: LamePtr) -> c_int;
-    pub fn lame_encode_buffer(ptr: LamePtr,
-        pcm_l: *const i16, pcm_r: *const i16, pcm_numsamples: c_int,
-        mp3buf: *mut u8, mp3buf_size: c_int) -> c_int;
+    pub fn lame_encode_buffer(
+        ptr: LamePtr,
+        pcm_l: *const i16,
+        pcm_r: *const i16,
+        pcm_numsamples: c_int,
+        mp3buf: *mut u8,
+        mp3buf_size: c_int,
+    ) -> c_int;
     pub fn lame_encode_flush(ptr: LamePtr, mp3buf: *mut u8, mp3buf_size: c_int) -> c_int;
 }

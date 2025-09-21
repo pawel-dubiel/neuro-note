@@ -30,7 +30,9 @@ fn test_audio_writer_mp3_creation() {
     let samples_to_write = 1152 * 2 * 2; // 2 frames worth of stereo samples
     for i in 0..samples_to_write {
         let sample = (i as f32 / 100.0).sin() * 16384.0;
-        audio_writer.write_sample(sample as i16).expect("Write sample");
+        audio_writer
+            .write_sample(sample as i16)
+            .expect("Write sample");
     }
 
     // Finalize
@@ -62,15 +64,16 @@ fn test_audio_writer_wav_creation() {
         sample_format: hound::SampleFormat::Int,
     };
 
-    let wav_writer = hound::WavWriter::create(&temp_path, spec)
-        .expect("Create WAV writer");
+    let wav_writer = hound::WavWriter::create(&temp_path, spec).expect("Create WAV writer");
 
     let mut audio_writer = AudioWriter::Wav(wav_writer);
 
     // Write some samples
     for i in 0..44100 {
         let sample = (i as f32 / 100.0).sin() * 16384.0;
-        audio_writer.write_sample(sample as i16).expect("Write sample");
+        audio_writer
+            .write_sample(sample as i16)
+            .expect("Write sample");
     }
 
     // Finalize
@@ -103,7 +106,9 @@ fn test_mp3_quality_settings() {
         let mut encoder = lame_encoder::Lame::new().expect("Failed to create LAME encoder");
         encoder.set_sample_rate(44100).expect("Set sample rate");
         encoder.set_channels(2).expect("Set channels");
-        encoder.set_kilobitrate(*expected_bitrate).expect("Set bitrate");
+        encoder
+            .set_kilobitrate(*expected_bitrate)
+            .expect("Set bitrate");
         encoder.set_quality(*expected_quality).expect("Set quality");
         encoder.init_params().expect("Init params");
 
@@ -124,13 +129,19 @@ fn test_mp3_quality_settings() {
         let samples_to_write = 1152 * 2 * 3; // 3 frames worth
         for i in 0..samples_to_write {
             let sample = (i as f32 / 100.0).sin() * 16384.0;
-            audio_writer.write_sample(sample as i16).expect("Write sample");
+            audio_writer
+                .write_sample(sample as i16)
+                .expect("Write sample");
         }
 
         audio_writer.finalize().expect("Finalize");
 
         let metadata = std::fs::metadata(&temp_path).expect("File should exist");
-        assert!(metadata.len() > 0, "MP3 file should have content for {}", quality_name);
+        assert!(
+            metadata.len() > 0,
+            "MP3 file should have content for {}",
+            quality_name
+        );
 
         println!("{}: {} bytes", quality_name, metadata.len());
 
@@ -146,7 +157,9 @@ fn test_mono_to_stereo_conversion() {
 
     let mut encoder = lame_encoder::Lame::new().expect("Failed to create LAME encoder");
     encoder.set_sample_rate(44100).expect("Set sample rate");
-    encoder.set_channels(2).expect("Set channels - stereo output");
+    encoder
+        .set_channels(2)
+        .expect("Set channels - stereo output");
     encoder.set_kilobitrate(128).expect("Set bitrate");
     encoder.set_quality(5).expect("Set quality");
     encoder.init_params().expect("Init params");
@@ -164,7 +177,9 @@ fn test_mono_to_stereo_conversion() {
     let samples_to_write = 1152 * 3; // 3 frames worth of mono
     for i in 0..samples_to_write {
         let sample = (i as f32 / 100.0).sin() * 16384.0;
-        audio_writer.write_sample(sample as i16).expect("Write sample");
+        audio_writer
+            .write_sample(sample as i16)
+            .expect("Write sample");
     }
 
     audio_writer.finalize().expect("Finalize");

@@ -1,10 +1,10 @@
 mod lame_ffi;
 
-use std::ptr;
-use std::ops::Drop;
 use lame_ffi::LamePtr;
-use std::os::raw::c_int;
 use std::convert::From;
+use std::ops::Drop;
+use std::os::raw::c_int;
+use std::ptr;
 
 #[derive(Debug)]
 pub enum Error {
@@ -87,7 +87,8 @@ impl Lame {
     /// Sets sample rate of input PCM data.
     pub fn set_sample_rate(&mut self, sample_rate: u32) -> Result<(), Error> {
         handle_simple_error(unsafe {
-            lame_ffi::lame_set_in_samplerate(self.ptr, sample_rate as c_int) })
+            lame_ffi::lame_set_in_samplerate(self.ptr, sample_rate as c_int)
+        })
     }
 
     /// Number of channels in input stream. Defaults to 2.
@@ -97,8 +98,7 @@ impl Lame {
 
     /// Sets number of channels in input stream.
     pub fn set_channels(&mut self, channels: u8) -> Result<(), Error> {
-        handle_simple_error(unsafe {
-            lame_ffi::lame_set_num_channels(self.ptr, channels as c_int) })
+        handle_simple_error(unsafe { lame_ffi::lame_set_num_channels(self.ptr, channels as c_int) })
     }
 
     /// LAME quality parameter. See `set_quality` for more details.
@@ -113,8 +113,7 @@ impl Lame {
     /// This is a number from 0 to 9 (inclusive), where 0 is the best and
     /// slowest and 9 is the worst and fastest.
     pub fn set_quality(&mut self, quality: u8) -> Result<(), Error> {
-        handle_simple_error(unsafe {
-            lame_ffi::lame_set_quality(self.ptr, quality as c_int) })
+        handle_simple_error(unsafe { lame_ffi::lame_set_quality(self.ptr, quality as c_int) })
     }
 
     /// Returns the output bitrate in kilobits per second.
@@ -125,28 +124,36 @@ impl Lame {
     /// Sets the target output bitrate. This value is in kilobits per second,
     /// so passing 320 would select an output bitrate of 320kbps.
     pub fn set_kilobitrate(&mut self, quality: i32) -> Result<(), Error> {
-        handle_simple_error(unsafe {
-            lame_ffi::lame_set_brate(self.ptr, quality as c_int) })
+        handle_simple_error(unsafe { lame_ffi::lame_set_brate(self.ptr, quality as c_int) })
     }
 
     /// Sets more internal parameters according to the other basic parameter
     /// settings.
     pub fn init_params(&mut self) -> Result<(), Error> {
-        handle_simple_error(unsafe {
-            lame_ffi::lame_init_params(self.ptr) })
+        handle_simple_error(unsafe { lame_ffi::lame_init_params(self.ptr) })
     }
 
     /// Encodes PCM data into MP3 frames. The `pcm_left` and `pcm_right`
     /// buffers must be of the same length, or this function will panic.
-    pub fn encode(&mut self, pcm_left: &[i16], pcm_right: &[i16], mp3_buffer: &mut [u8]) -> Result<usize, EncodeError> {
+    pub fn encode(
+        &mut self,
+        pcm_left: &[i16],
+        pcm_right: &[i16],
+        mp3_buffer: &mut [u8],
+    ) -> Result<usize, EncodeError> {
         if pcm_left.len() != pcm_right.len() {
             panic!("left and right channels must have same number of samples!");
         }
 
         let retn = unsafe {
-            lame_ffi::lame_encode_buffer(self.ptr,
-                pcm_left.as_ptr(), pcm_right.as_ptr(), int_size(pcm_left.len()),
-                mp3_buffer.as_mut_ptr(), int_size(mp3_buffer.len()))
+            lame_ffi::lame_encode_buffer(
+                self.ptr,
+                pcm_left.as_ptr(),
+                pcm_right.as_ptr(),
+                int_size(pcm_left.len()),
+                mp3_buffer.as_mut_ptr(),
+                int_size(mp3_buffer.len()),
+            )
         };
 
         match retn {
@@ -168,7 +175,11 @@ impl Lame {
     /// This should be called when done encoding to ensure all data is written.
     pub fn flush(&mut self, mp3_buffer: &mut [u8]) -> Result<usize, EncodeError> {
         let retn = unsafe {
-            lame_ffi::lame_encode_flush(self.ptr, mp3_buffer.as_mut_ptr(), int_size(mp3_buffer.len()))
+            lame_ffi::lame_encode_flush(
+                self.ptr,
+                mp3_buffer.as_mut_ptr(),
+                int_size(mp3_buffer.len()),
+            )
         };
 
         match retn {
@@ -261,7 +272,11 @@ mod tests {
         assert!(result.is_ok(), "Encoding should succeed");
         let bytes_written = result.unwrap();
         assert!(bytes_written > 0, "Should produce some MP3 data");
-        println!("Encoded {} samples into {} bytes", samples_per_channel * 2, bytes_written);
+        println!(
+            "Encoded {} samples into {} bytes",
+            samples_per_channel * 2,
+            bytes_written
+        );
     }
 
     #[test]
@@ -377,9 +392,17 @@ mod tests {
         // Verify file was created and has content
         let metadata = std::fs::metadata(&temp_path).expect("File should exist");
         assert!(metadata.len() > 0, "MP3 file should have content");
-        assert_eq!(metadata.len() as usize, total_bytes_written, "File size should match bytes written");
+        assert_eq!(
+            metadata.len() as usize,
+            total_bytes_written,
+            "File size should match bytes written"
+        );
 
-        println!("Created test MP3 file: {} ({} bytes)", temp_path.display(), total_bytes_written);
+        println!(
+            "Created test MP3 file: {} ({} bytes)",
+            temp_path.display(),
+            total_bytes_written
+        );
 
         // Cleanup
         std::fs::remove_file(&temp_path).expect("Should cleanup temp file");
@@ -410,7 +433,11 @@ mod tests {
             let mut mp3_buffer = vec![0u8; 16384];
             let result = encoder.encode(&left_channel, &right_channel, &mut mp3_buffer);
 
-            assert!(result.is_ok(), "Encoding with bitrate {} should succeed", bitrate);
+            assert!(
+                result.is_ok(),
+                "Encoding with bitrate {} should succeed",
+                bitrate
+            );
             println!("Bitrate {}: {} bytes encoded", bitrate, result.unwrap());
         }
     }

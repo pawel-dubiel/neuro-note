@@ -17,10 +17,13 @@ let sonioxEnableChk: HTMLInputElement | null;
 let sonioxStatusEl: HTMLElement | null;
 let sonioxConnected = false;
 let openaiApiKeyInp: HTMLInputElement | null;
+let openrouterApiKeyInp: HTMLInputElement | null;
 let assistantSel: HTMLSelectElement | null;
-let openaiModelSel: HTMLSelectElement | null;
-let openaiEnableChk: HTMLInputElement | null;
-let openaiStatusEl: HTMLElement | null;
+let aiProviderSel: HTMLSelectElement | null;
+let aiModelSel: HTMLSelectElement | null;
+let aiEnableChk: HTMLInputElement | null;
+let aiStatusEl: HTMLElement | null;
+let openrouterCreditsEl: HTMLElement | null;
 let aiAnalysisEl: HTMLElement | null;
 let aiPrevBtn: HTMLButtonElement | null;
 let aiNextBtn: HTMLButtonElement | null;
@@ -46,6 +49,149 @@ let savedVoiceConfig: {
   format: string;
   quality: string;
 } | null = null;
+
+const providerSelectedModels: Record<string, string> = {
+  openai: "gpt-4.1",
+  openrouter: "deepseek/deepseek-chat-v3-0324:free",
+};
+
+const providerModelCache: Record<string, string[]> = {
+  openai: [],
+  openrouter: [],
+};
+
+function getCurrentProvider(): "openai" | "openrouter" {
+  return aiProviderSel?.value === "openrouter" ? "openrouter" : "openai";
+}
+
+function getApiKeyForProvider(provider: "openai" | "openrouter"): string {
+  if (provider === "openrouter") {
+    return openrouterApiKeyInp?.value.trim() || "";
+  }
+  return openaiApiKeyInp?.value.trim() || "";
+}
+
+async function fetchModelsForMain(provider: "openai" | "openrouter") {
+  const apiKey = getApiKeyForProvider(provider);
+  if (!apiKey) {
+    providerModelCache[provider] = [];
+    if (getCurrentProvider() === provider) {
+      populateModelOptions(provider);
+    }
+    return;
+  }
+
+  try {
+    const models = await invoke<string[]>("get_ai_models", { provider, apiKey });
+    providerModelCache[provider] = models;
+
+    if (!providerSelectedModels[provider] || !models.includes(providerSelectedModels[provider])) {
+      providerSelectedModels[provider] = models[0] || "";
+    }
+
+    if (getCurrentProvider() === provider) {
+      populateModelOptions(provider);
+    }
+  } catch (error) {
+    console.error(`❌ Failed to fetch ${provider} models:`, error);
+  }
+}
+
+function populateModelOptions(provider: "openai" | "openrouter") {
+  const select = aiModelSel;
+  if (!select) return;
+
+  const models = providerModelCache[provider] || [];
+  select.innerHTML = "";
+
+  if (models.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Enter API key to load models...";
+    select.appendChild(option);
+    select.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  models.forEach((model) => {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = model;
+    select.appendChild(option);
+  });
+
+  const desired = providerSelectedModels[provider];
+  if (desired && models.includes(desired)) {
+    select.value = desired;
+  } else {
+    select.value = models[0];
+    providerSelectedModels[provider] = models[0];
+  }
+}
+
+async function refreshOpenrouterCredits() {
+  if (!openrouterCreditsEl) return;
+
+  if (getCurrentProvider() !== "openrouter") {
+    updateOpenrouterCreditsDisplay(null);
+    return;
+  }
+
+  const apiKey = getApiKeyForProvider("openrouter");
+  if (!apiKey) {
+    updateOpenrouterCreditsDisplay(null);
+    return;
+  }
+
+  updateOpenrouterCreditsDisplay(undefined);
+
+  try {
+    const summary = await invoke<{ total_credits: number; total_usage: number }>("get_openrouter_credits", { apiKey });
+    updateOpenrouterCreditsDisplay(summary);
+  } catch (error) {
+    console.error("❌ Failed to load OpenRouter credits:", error);
+    if (openrouterCreditsEl) {
+      openrouterCreditsEl.style.display = "";
+      openrouterCreditsEl.textContent = "Credits: ?";
+      openrouterCreditsEl.setAttribute("title", `Failed to load credits: ${error}`);
+    }
+  }
+}
+
+function updateOpenrouterCreditsDisplay(summary: { total_credits: number; total_usage: number } | null | undefined) {
+  if (!openrouterCreditsEl) return;
+
+  if (getCurrentProvider() !== "openrouter") {
+    openrouterCreditsEl.style.display = "none";
+    openrouterCreditsEl.textContent = "";
+    openrouterCreditsEl.removeAttribute("title");
+    return;
+  }
+
+  openrouterCreditsEl.style.display = "";
+
+  if (summary === undefined) {
+    openrouterCreditsEl.textContent = "Credits: …";
+    openrouterCreditsEl.removeAttribute("title");
+    return;
+  }
+
+  if (summary === null) {
+    const apiKey = getApiKeyForProvider("openrouter");
+    openrouterCreditsEl.textContent = apiKey ? "Credits: --" : "";
+    if (!apiKey) openrouterCreditsEl.style.display = "none";
+    openrouterCreditsEl.removeAttribute("title");
+    return;
+  }
+
+  const remaining = Math.max(summary.total_credits - summary.total_usage, 0);
+  openrouterCreditsEl.textContent = `Credits: ${remaining.toFixed(2)}`;
+  openrouterCreditsEl.setAttribute(
+    "title",
+    `Total: ${summary.total_credits.toFixed(2)} • Used: ${summary.total_usage.toFixed(2)}`,
+  );
+}
 
 // Recording state management
 type RecordingState =
@@ -295,31 +441,11 @@ function updateUIForState(state: RecordingState) {
 async function loadInitialConfiguration() {
   try {
     const config = await invoke<any>("load_app_config");
-
-    // Update UI with loaded configuration
-    if (sonioxApiKeyInp) sonioxApiKeyInp.value = config.soniox.api_key || "";
-    if (sonioxEnableChk) sonioxEnableChk.checked = config.ui.enable_soniox || false;
-    if (openaiApiKeyInp) openaiApiKeyInp.value = config.openai.api_key || "";
-    if (openaiModelSel) openaiModelSel.value = config.openai.model || "gpt-4.1";
-    if (openaiEnableChk) openaiEnableChk.checked = config.ui.enable_openai || false;
-    if (formatSel) formatSel.value = config.recording.default_format || "mp3";
-    if (qualitySel) qualitySel.value = config.recording.default_quality || "verylow";
-    if (autoDetectChk) autoDetectChk.checked = config.recording.auto_detect_enabled !== false;
-    if (assistantSel) assistantSel.value = config.ui.default_assistant || "general";
+    applyConfigToUi(config);
 
     console.log("✅ Initial configuration loaded successfully");
-
-    // Fetch models if OpenAI API key is available
-    if (config.openai.api_key) {
-      await fetchOpenAIModels();
-      // After fetching, ensure the configured model is selected
-      if (openaiModelSel && config.openai.model) {
-        openaiModelSel.value = config.openai.model;
-      }
-    }
   } catch (error) {
     console.log("ℹ️ No configuration found, using defaults:", error);
-    // This is expected on first run, continue with defaults
   }
 }
 
@@ -371,60 +497,123 @@ async function loadAssistants() {
   }
 }
 
-// OpenAI analysis function
+// AI analysis function
 let analyzing = false;
-async function analyzeWithOpenAI(transcriptOverride?: string) {
+let currentStreamId: string | null = null;
+let currentStreamText = "";
+
+async function analyzeWithAI(transcriptOverride?: string) {
   const transcriptToAnalyze = (transcriptOverride ?? lastTranscript).trim();
-  if (analyzing || !openaiApiKeyInp?.value.trim() || !transcriptToAnalyze) {
+  const provider = getCurrentProvider();
+  const apiKey = getApiKeyForProvider(provider);
+
+  if (analyzing || !apiKey || !transcriptToAnalyze) {
     return;
   }
 
   analyzing = true;
+  const requestId = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+
+  currentStreamId = requestId;
+  currentStreamText = "";
+
+  setAiStatus("analyzing", "Analyzing...");
+
+  if (aiAnalysisEl) {
+    const placeholder = aiAnalysisEl.querySelector(".placeholder");
+    if (placeholder) placeholder.remove();
+    aiAnalysisEl.textContent = "";
+  }
+
+  const selectedModel = aiModelSel?.value || providerSelectedModels[provider];
+  const lastAnswer = aiAnswers.length > 0 ? aiAnswers[aiAnswers.length - 1] : null;
+
+  modelRuns += 1;
+  if (modelCountEl) modelCountEl.textContent = `Model: ${modelRuns}`;
 
   try {
-    // Update status indicator instead of AI analysis content
-    if (openaiStatusEl) {
-      openaiStatusEl.textContent = "Analyzing...";
-      openaiStatusEl.classList.remove("ready", "error");
-      openaiStatusEl.classList.add("analyzing");
-    }
-
-    const selectedModel = openaiModelSel?.value || "gpt-4.1";
-    const lastAnswer = aiAnswers.length > 0 ? aiAnswers[aiAnswers.length - 1] : null;
-    // Count a real model request before invoking
-    modelRuns += 1;
-    if (modelCountEl) modelCountEl.textContent = `Model: ${modelRuns}`;
-    const result = await invoke<string>("analyze_with_openai", {
-      transcript: transcriptToAnalyze,
-      apiKey: openaiApiKeyInp.value.trim(),
-      model: selectedModel,
+    await invoke("stream_ai_analysis", {
+      provider,
+      apiKey,
+      model: selectedModel || null,
       assistantId: assistantSel?.value || null,
+      requestId,
+      transcript: transcriptToAnalyze,
       lastOutput: lastAnswer,
     });
-
-    pushAiAnswer(result);
-
-    if (openaiStatusEl) {
-      openaiStatusEl.textContent = "Ready";
-      openaiStatusEl.classList.remove("analyzing", "error");
-      openaiStatusEl.classList.add("ready");
-    }
-
-    console.log("✅ OpenAI analysis completed");
   } catch (error) {
-    console.error("❌ OpenAI analysis error:", error);
+    console.error("❌ AI analysis error:", error);
+    handleAiStreamError(requestId, String(error));
+  }
+}
 
-    if (openaiStatusEl) {
-      openaiStatusEl.textContent = "Error";
-      openaiStatusEl.classList.remove("analyzing", "ready");
-      openaiStatusEl.classList.add("error");
+type AiStatusState = "ready" | "analyzing" | "error";
+
+function setAiStatus(state: AiStatusState, text: string) {
+  if (!aiStatusEl) return;
+  aiStatusEl.textContent = text;
+  aiStatusEl.classList.remove("ready", "analyzing", "error");
+  aiStatusEl.classList.add(state);
+}
+
+type AiStreamPayload = {
+  request_id: string;
+  segment?: string | null;
+  final_text?: string | null;
+  done: boolean;
+};
+
+function processAiStreamPayload(payload: AiStreamPayload) {
+  if (!currentStreamId || payload.request_id !== currentStreamId) {
+    return;
+  }
+
+  if (payload.segment) {
+    currentStreamText += payload.segment;
+    if (aiAnalysisEl) {
+      const placeholder = aiAnalysisEl.querySelector(".placeholder");
+      if (placeholder) placeholder.remove();
+      aiAnalysisEl.textContent = currentStreamText;
+      aiAnalysisEl.scrollTop = aiAnalysisEl.scrollHeight;
     }
+  }
+
+  if (payload.done) {
+    analyzing = false;
+    currentStreamId = null;
+
+    const finalText = (payload.final_text ?? currentStreamText).trim();
+    currentStreamText = finalText;
+
+    setAiStatus("ready", "Ready");
 
     if (aiAnalysisEl) {
-      aiAnalysisEl.textContent = `Error: ${error}`;
+      const placeholder = aiAnalysisEl.querySelector(".placeholder");
+      if (placeholder) placeholder.remove();
+      aiAnalysisEl.textContent = finalText;
+      aiAnalysisEl.scrollTop = aiAnalysisEl.scrollHeight;
     }
-  } finally {
-    analyzing = false;
+
+    if (finalText.length > 0) {
+      pushAiAnswer(finalText);
+    }
+  }
+}
+
+function handleAiStreamError(requestId: string, message: string) {
+  if (currentStreamId && currentStreamId !== requestId) {
+    return;
+  }
+
+  analyzing = false;
+  currentStreamId = null;
+  currentStreamText = "";
+  setAiStatus("error", "Error");
+
+  if (aiAnalysisEl) {
+    aiAnalysisEl.textContent = `Error: ${message}`;
   }
 }
 
@@ -443,43 +632,6 @@ function isStable(text: string): boolean {
   const ends = /[.!?)]\s*$/.test(text.trim());
   const hasTentative = /_+[^_]*_+/.test(text);
   return ends && !hasTentative;
-}
-
-// Function to fetch and populate OpenAI models
-async function fetchOpenAIModels() {
-  if (!openaiApiKeyInp?.value.trim() || !openaiModelSel) {
-    return;
-  }
-
-  try {
-    const models = await invoke<string[]>("get_openai_models", {
-      apiKey: openaiApiKeyInp.value.trim()
-    });
-
-    // Clear existing options except the first default ones
-    const currentValue = openaiModelSel.value;
-    openaiModelSel.innerHTML = "";
-
-    // Add fetched models
-    models.forEach(model => {
-      const option = document.createElement("option");
-      option.value = model;
-      option.textContent = model;
-      openaiModelSel?.appendChild(option);
-    });
-
-    // Try to restore previous selection, or select first model
-    if (models.includes(currentValue)) {
-      openaiModelSel.value = currentValue;
-    } else if (models.length > 0) {
-      openaiModelSel.value = models[0];
-    }
-
-    console.log(`✅ Loaded ${models.length} OpenAI models`);
-  } catch (error) {
-    console.error("❌ Failed to fetch OpenAI models:", error);
-    // Keep default options if fetching fails
-  }
 }
 
 // Panel toggle functionality
@@ -538,149 +690,190 @@ async function setupConfigModal() {
   const configSave = document.querySelector("#config-save");
   const configCancel = document.querySelector("#config-cancel");
 
-  // Configuration form elements
   const configSonioxKey = document.querySelector("#config-soniox-key") as HTMLInputElement;
   const configSonioxFormat = document.querySelector("#config-soniox-format") as HTMLSelectElement;
   const configSonioxEnable = document.querySelector("#config-soniox-enable") as HTMLInputElement;
+
+  const configAiProvider = document.querySelector("#config-ai-provider") as HTMLSelectElement;
+  const configAiEnable = document.querySelector("#config-ai-enable") as HTMLInputElement;
+
   const configOpenaiKey = document.querySelector("#config-openai-key") as HTMLInputElement;
   const configOpenaiModel = document.querySelector("#config-openai-model") as HTMLSelectElement;
   const configOpenaiGateModel = document.querySelector("#config-openai-gate-model") as HTMLSelectElement;
-  const configOpenaiEnable = document.querySelector("#config-openai-enable") as HTMLInputElement;
+
+  const configOpenrouterKey = document.querySelector("#config-openrouter-key") as HTMLInputElement;
+  const configOpenrouterModel = document.querySelector("#config-openrouter-model") as HTMLSelectElement;
+  const configOpenrouterGateModel = document.querySelector("#config-openrouter-gate-model") as HTMLSelectElement;
+  const configOpenrouterCredits = document.querySelector("#config-openrouter-credits") as HTMLElement;
+
   const configRecordingFormat = document.querySelector("#config-recording-format") as HTMLSelectElement;
   const configRecordingQuality = document.querySelector("#config-recording-quality") as HTMLSelectElement;
   const configRecordingAuto = document.querySelector("#config-recording-auto") as HTMLInputElement;
   const configDefaultAssistant = document.querySelector("#config-default-assistant") as HTMLSelectElement;
 
-  // Fetch models for configuration modal
-  async function fetchModelsForConfig() {
-    const apiKey = configOpenaiKey?.value.trim();
-    if (!apiKey || !configOpenaiModel || !configOpenaiGateModel) {
+  let latestConfig: any = null;
+  let openaiDebounce: number | undefined;
+  let openrouterDebounce: number | undefined;
+
+  const fillSelect = (
+    select: HTMLSelectElement | null,
+    models: string[],
+    desired: string | undefined,
+    fallback: string
+  ) => {
+    if (!select) return;
+    select.innerHTML = "";
+    if (models.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "Enter API key to load models...";
+      select.appendChild(option);
+      select.disabled = true;
       return;
     }
 
+    select.disabled = false;
+    models.forEach((model) => {
+      const option = document.createElement("option");
+      option.value = model;
+      option.textContent = model;
+      select.appendChild(option);
+    });
+
+    if (desired && models.includes(desired)) {
+      select.value = desired;
+    } else if (models.includes(fallback)) {
+      select.value = fallback;
+    } else {
+      select.value = models[0];
+    }
+  };
+
+  async function fetchConfigModels(provider: "openai" | "openrouter") {
+    const key = provider === "openrouter"
+      ? configOpenrouterKey?.value.trim()
+      : configOpenaiKey?.value.trim();
+    const modelSelect = provider === "openrouter" ? configOpenrouterModel : configOpenaiModel;
+    const gateSelect = provider === "openrouter" ? configOpenrouterGateModel : configOpenaiGateModel;
+    if (!key || !modelSelect || !gateSelect) return;
+
     try {
-      const models = await invoke<string[]>("get_openai_models", {
-        apiKey: apiKey
-      });
-
-      // Save current selections
-      const currentModel = configOpenaiModel.value;
-      const currentGateModel = configOpenaiGateModel.value;
-
-      // Clear and repopulate main model dropdown
-      configOpenaiModel.innerHTML = "";
-      models.forEach(model => {
-        const option = document.createElement("option");
-        option.value = model;
-        option.textContent = model;
-        configOpenaiModel.appendChild(option);
-      });
-
-      // Clear and repopulate gate model dropdown
-      configOpenaiGateModel.innerHTML = "";
-      models.forEach(model => {
-        const option = document.createElement("option");
-        option.value = model;
-        option.textContent = model;
-        configOpenaiGateModel.appendChild(option);
-      });
-
-      // Restore selections if they exist in the fetched models
-      if (models.includes(currentModel)) {
-        configOpenaiModel.value = currentModel;
-      } else if (models.length > 0) {
-        configOpenaiModel.value = models[0];
+      const models = await invoke<string[]>("get_ai_models", { provider, apiKey: key });
+      if (provider === "openrouter") {
+        fillSelect(modelSelect, models, latestConfig?.openrouter?.model, "deepseek/deepseek-chat-v3-0324:free");
+        fillSelect(gateSelect, models, latestConfig?.openrouter?.gate_model, "deepseek/deepseek-chat-v3-0324:free");
+      } else {
+        fillSelect(modelSelect, models, latestConfig?.openai?.model, "gpt-4.1");
+        fillSelect(gateSelect, models, latestConfig?.openai?.gate_model, "gpt-4.1-nano");
       }
-
-      if (models.includes(currentGateModel)) {
-        configOpenaiGateModel.value = currentGateModel;
-      } else if (models.includes("gpt-4o-mini")) {
-        configOpenaiGateModel.value = "gpt-4o-mini";
-      } else if (models.length > 0) {
-        configOpenaiGateModel.value = models[0];
-      }
-
-      console.log(`✅ Loaded ${models.length} OpenAI models for config`);
     } catch (error) {
-      console.error("❌ Failed to fetch models for config:", error);
-      // Keep default options if fetching fails
+      console.error(`❌ Failed to fetch ${provider} models for config:`, error);
     }
   }
 
-  // Load configuration from backend
+  async function refreshConfigOpenrouterCredits() {
+    if (!configOpenrouterCredits) return;
+    const key = configOpenrouterKey?.value.trim();
+    if (!key) {
+      configOpenrouterCredits.textContent = "--";
+      configOpenrouterCredits.removeAttribute("title");
+      return;
+    }
+
+    configOpenrouterCredits.textContent = "…";
+    configOpenrouterCredits.removeAttribute("title");
+    try {
+      const summary = await invoke<{ total_credits: number; total_usage: number }>("get_openrouter_credits", { apiKey: key });
+      const remaining = Math.max(summary.total_credits - summary.total_usage, 0);
+      configOpenrouterCredits.textContent = `${remaining.toFixed(2)} (used ${summary.total_usage.toFixed(2)})`;
+      configOpenrouterCredits.setAttribute(
+        "title",
+        `Total: ${summary.total_credits.toFixed(2)} • Used: ${summary.total_usage.toFixed(2)}`,
+      );
+    } catch (error) {
+      configOpenrouterCredits.textContent = "?";
+      configOpenrouterCredits.setAttribute("title", `Failed to load credits: ${error}`);
+      console.error("❌ Failed to load OpenRouter credits for config:", error);
+    }
+  }
+
   async function loadConfiguration() {
     try {
       const config = await invoke<any>("load_app_config");
+      latestConfig = config;
 
-      // Populate form with loaded config (non-model fields first)
-      if (configSonioxKey) configSonioxKey.value = config.soniox.api_key || "";
-      if (configSonioxFormat) configSonioxFormat.value = config.soniox.audio_format || "pcm_s16le";
-      if (configSonioxEnable) configSonioxEnable.checked = config.ui.enable_soniox || false;
+      if (configSonioxKey) configSonioxKey.value = config.soniox?.api_key || "";
+      if (configSonioxFormat) configSonioxFormat.value = config.soniox?.audio_format || "pcm_s16le";
+      if (configSonioxEnable) configSonioxEnable.checked = config.ui?.enable_soniox || false;
 
-      if (configOpenaiKey) configOpenaiKey.value = config.openai.api_key || "";
-      if (configOpenaiEnable) configOpenaiEnable.checked = config.ui.enable_openai || false;
+      if (configAiProvider) configAiProvider.value = config.ui?.ai_provider || "openai";
+      if (configAiEnable) configAiEnable.checked = config.ui?.enable_ai || false;
 
-      if (configRecordingFormat) configRecordingFormat.value = config.recording.default_format || "mp3";
-      if (configRecordingQuality) configRecordingQuality.value = config.recording.default_quality || "verylow";
-      if (configRecordingAuto) configRecordingAuto.checked = config.recording.auto_detect_enabled !== false;
+      if (configOpenaiKey) configOpenaiKey.value = config.openai?.api_key || "";
+      if (configOpenrouterKey) configOpenrouterKey.value = config.openrouter?.api_key || "";
 
-      if (configDefaultAssistant) configDefaultAssistant.value = config.ui.default_assistant || "general";
+      fillSelect(configOpenaiModel, config.openai?.model ? [config.openai.model] : [], config.openai?.model, "gpt-4.1");
+      fillSelect(configOpenaiGateModel, config.openai?.gate_model ? [config.openai.gate_model] : [], config.openai?.gate_model, "gpt-4.1-nano");
+      fillSelect(configOpenrouterModel, config.openrouter?.model ? [config.openrouter.model] : [], config.openrouter?.model, "deepseek/deepseek-chat-v3-0324:free");
+      fillSelect(configOpenrouterGateModel, config.openrouter?.gate_model ? [config.openrouter.gate_model] : [], config.openrouter?.gate_model, "deepseek/deepseek-chat-v3-0324:free");
 
-      // Fetch models first, then set configured values
+      if (configRecordingFormat) configRecordingFormat.value = config.recording?.default_format || "mp3";
+      if (configRecordingQuality) configRecordingQuality.value = config.recording?.default_quality || "verylow";
+      if (configRecordingAuto) configRecordingAuto.checked = config.recording?.auto_detect_enabled !== false;
+      if (configDefaultAssistant) configDefaultAssistant.value = config.ui?.default_assistant || "general";
+
       if (configOpenaiKey?.value.trim()) {
-        await fetchModelsForConfig();
-
-        // After fetching models, set the configured model values
-        if (configOpenaiModel && config.openai.model) {
-          configOpenaiModel.value = config.openai.model;
-        }
-        if (configOpenaiGateModel && config.openai.gate_model) {
-          configOpenaiGateModel.value = config.openai.gate_model;
-        }
-      } else {
-        // No API key, set placeholder values for models
-        if (configOpenaiModel) configOpenaiModel.value = config.openai.model || "";
-        if (configOpenaiGateModel) configOpenaiGateModel.value = config.openai.gate_model || "";
+        await fetchConfigModels("openai");
       }
-
-      console.log("✅ Configuration loaded successfully");
+      if (configOpenrouterKey?.value.trim()) {
+        await fetchConfigModels("openrouter");
+        await refreshConfigOpenrouterCredits();
+      } else if (configOpenrouterCredits) {
+        configOpenrouterCredits.textContent = "--";
+        configOpenrouterCredits.removeAttribute("title");
+      }
     } catch (error) {
       console.error("❌ Failed to load configuration:", error);
-      // Still allow the modal to open with default values
+      alert(`Failed to load configuration: ${error}`);
     }
   }
 
-  // Save configuration to backend
   async function saveConfiguration() {
     try {
       const config = {
         soniox: {
           api_key: configSonioxKey?.value || "",
           audio_format: configSonioxFormat?.value || "pcm_s16le",
-          translation: "none"
+          translation: "none",
         },
         openai: {
           api_key: configOpenaiKey?.value || "",
           model: configOpenaiModel?.value || "gpt-4.1",
-          gate_model: configOpenaiGateModel?.value || "gpt-4.1-nano"
+          gate_model: configOpenaiGateModel?.value || "gpt-4.1-nano",
+        },
+        openrouter: {
+          api_key: configOpenrouterKey?.value || "",
+          model: configOpenrouterModel?.value || "deepseek/deepseek-chat-v3-0324:free",
+          gate_model: configOpenrouterGateModel?.value || "deepseek/deepseek-chat-v3-0324:free",
         },
         recording: {
           default_format: configRecordingFormat?.value || "mp3",
           default_quality: configRecordingQuality?.value || "verylow",
-          auto_detect_enabled: configRecordingAuto?.checked !== false
+          auto_detect_enabled: configRecordingAuto?.checked !== false,
         },
         ui: {
           enable_soniox: configSonioxEnable?.checked || false,
-          enable_openai: configOpenaiEnable?.checked || false,
-          default_assistant: configDefaultAssistant?.value || "general"
-        }
+          enable_ai: configAiEnable?.checked || false,
+          default_assistant: configDefaultAssistant?.value || "general",
+          ai_provider: configAiProvider?.value || "openai",
+        },
       };
 
       await invoke("save_app_config", { config });
       console.log("✅ Configuration saved successfully");
 
-      // Update UI with saved values
-      updateUIFromConfig(config);
+      latestConfig = config;
+      applyConfigToUi(config);
 
       return true;
     } catch (error) {
@@ -690,30 +883,12 @@ async function setupConfigModal() {
     }
   }
 
-  // Update main UI elements with configuration values
-  function updateUIFromConfig(config: any) {
-    // Update main UI form elements to reflect saved configuration
-    if (sonioxApiKeyInp) sonioxApiKeyInp.value = config.soniox.api_key || "";
-    if (sonioxEnableChk) sonioxEnableChk.checked = config.ui.enable_soniox || false;
-    if (openaiApiKeyInp) openaiApiKeyInp.value = config.openai.api_key || "";
-    if (openaiModelSel) openaiModelSel.value = config.openai.model || "gpt-4.1";
-    if (openaiEnableChk) openaiEnableChk.checked = config.ui.enable_openai || false;
-    if (formatSel) formatSel.value = config.recording.default_format || "mp3";
-    if (qualitySel) qualitySel.value = config.recording.default_quality || "verylow";
-    if (autoDetectChk) autoDetectChk.checked = config.recording.auto_detect_enabled !== false;
-    if (assistantSel) assistantSel.value = config.ui.default_assistant || "general";
-
-    // Trigger change events to update dependent UI states
-    formatSel?.dispatchEvent(new Event("change"));
-  }
-
-  // Populate assistant selector in config modal
   async function populateConfigAssistants() {
     try {
       const assistants = await invoke<any[]>("get_assistants");
       if (configDefaultAssistant && assistants.length > 0) {
         configDefaultAssistant.innerHTML = "";
-        assistants.forEach(assistant => {
+        assistants.forEach((assistant) => {
           const option = document.createElement("option");
           option.value = assistant.id;
           option.textContent = assistant.name;
@@ -725,29 +900,25 @@ async function setupConfigModal() {
     }
   }
 
-  // Show modal
+  const hideModal = () => {
+    configModal?.classList.add("hidden");
+  };
+
   configBtn?.addEventListener("click", async () => {
     await loadConfiguration();
     await populateConfigAssistants();
     configModal?.classList.remove("hidden");
   });
 
-  // Hide modal
-  const hideModal = () => {
-    configModal?.classList.add("hidden");
-  };
-
   configClose?.addEventListener("click", hideModal);
   configCancel?.addEventListener("click", hideModal);
 
-  // Close modal on backdrop click
   configModal?.addEventListener("click", (e) => {
     if (e.target === configModal) {
       hideModal();
     }
   });
 
-  // Save and close modal
   configSave?.addEventListener("click", async () => {
     const success = await saveConfiguration();
     if (success) {
@@ -755,17 +926,72 @@ async function setupConfigModal() {
     }
   });
 
-  // Fetch models when API key changes in config modal
   configOpenaiKey?.addEventListener("input", () => {
-    // Debounce the API call
-    clearTimeout((window as any).configModelTimeout);
-    (window as any).configModelTimeout = setTimeout(async () => {
-      if (configOpenaiKey?.value.trim().length) {
-        await fetchModelsForConfig();
+    window.clearTimeout(openaiDebounce);
+    openaiDebounce = window.setTimeout(() => {
+      if (configOpenaiKey?.value.trim()) {
+        fetchConfigModels("openai");
       }
-    }, 1000);
+    }, 800);
+  });
+
+  configOpenrouterKey?.addEventListener("input", () => {
+    window.clearTimeout(openrouterDebounce);
+    openrouterDebounce = window.setTimeout(() => {
+      if (configOpenrouterKey?.value.trim()) {
+        fetchConfigModels("openrouter");
+        refreshConfigOpenrouterCredits();
+      } else if (configOpenrouterCredits) {
+        configOpenrouterCredits.textContent = "--";
+        configOpenrouterCredits.removeAttribute("title");
+      }
+    }, 800);
   });
 }
+
+function applyConfigToUi(config: any) {
+  if (sonioxApiKeyInp) sonioxApiKeyInp.value = config.soniox?.api_key || "";
+  if (sonioxEnableChk) sonioxEnableChk.checked = config.ui?.enable_soniox || false;
+
+  if (openaiApiKeyInp) openaiApiKeyInp.value = config.openai?.api_key || "";
+  if (openrouterApiKeyInp) openrouterApiKeyInp.value = config.openrouter?.api_key || "";
+
+  providerSelectedModels.openai = config.openai?.model || providerSelectedModels.openai;
+  providerSelectedModels.openrouter = config.openrouter?.model || providerSelectedModels.openrouter;
+
+  if (aiProviderSel) aiProviderSel.value = config.ui?.ai_provider || "openai";
+  if (aiEnableChk) aiEnableChk.checked = config.ui?.enable_ai || false;
+  if (assistantSel) assistantSel.value = config.ui?.default_assistant || "general";
+
+  if (formatSel) formatSel.value = config.recording?.default_format || "mp3";
+  if (qualitySel) qualitySel.value = config.recording?.default_quality || "verylow";
+  if (autoDetectChk) autoDetectChk.checked = config.recording?.auto_detect_enabled !== false;
+
+  formatSel?.dispatchEvent(new Event("change"));
+
+  if (config.openai?.api_key) {
+    fetchModelsForMain("openai");
+  } else {
+    providerModelCache.openai = [];
+    if (getCurrentProvider() === "openai") {
+      populateModelOptions("openai");
+    }
+  }
+
+  if (config.openrouter?.api_key) {
+    fetchModelsForMain("openrouter");
+  } else {
+    providerModelCache.openrouter = [];
+    if (getCurrentProvider() === "openrouter") {
+      populateModelOptions("openrouter");
+    }
+  }
+
+  updateOpenrouterCreditsDisplay(null);
+  populateModelOptions(getCurrentProvider());
+  refreshOpenrouterCredits();
+}
+
 
 window.addEventListener("DOMContentLoaded", async () => {
   btnStart = document.querySelector("#btn-start");
@@ -782,10 +1008,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   sonioxEnableChk = document.querySelector("#soniox-enable");
   sonioxStatusEl = document.querySelector("#soniox-status");
   openaiApiKeyInp = document.querySelector("#openai-api");
+  openrouterApiKeyInp = document.querySelector("#openrouter-api");
   assistantSel = document.querySelector("#assistant-select");
-  openaiModelSel = document.querySelector("#openai-model");
-  openaiEnableChk = document.querySelector("#openai-enable");
-  openaiStatusEl = document.querySelector("#openai-status");
+  aiProviderSel = document.querySelector("#ai-provider");
+  aiModelSel = document.querySelector("#ai-model");
+  aiEnableChk = document.querySelector("#ai-enable");
+  aiStatusEl = document.querySelector("#ai-status");
+  openrouterCreditsEl = document.querySelector("#openrouter-credits");
   aiAnalysisEl = document.querySelector("#ai-analysis");
 
   // Panel toggle functionality
@@ -793,6 +1022,27 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // Setup configuration modal
   setupConfigModal();
+
+  aiProviderSel?.addEventListener("change", async () => {
+    const provider = getCurrentProvider();
+    if (getApiKeyForProvider(provider)) {
+      await fetchModelsForMain(provider);
+    } else {
+      populateModelOptions(provider);
+    }
+    await refreshOpenrouterCredits();
+
+    if (aiEnableChk?.checked && lastTranscript.trim().length > 20) {
+      analyzeWithAI();
+    }
+  });
+
+  aiModelSel?.addEventListener("change", () => {
+    const provider = getCurrentProvider();
+    if (aiModelSel?.value) {
+      providerSelectedModels[provider] = aiModelSel.value;
+    }
+  });
 
   // Load configuration on startup
   await loadInitialConfiguration();
@@ -806,9 +1056,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   btnStop?.addEventListener("click", stop);
 
   // OpenAI enable checkbox listener
-  openaiEnableChk?.addEventListener("change", () => {
-    if (openaiEnableChk?.checked && lastTranscript.trim().length > 20) {
-      analyzeWithOpenAI();
+  aiEnableChk?.addEventListener("change", () => {
+    if (aiEnableChk?.checked && lastTranscript.trim().length > 20) {
+      analyzeWithAI();
     }
   });
 
@@ -818,7 +1068,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     clearTimeout((window as any).openaiModelTimeout);
     (window as any).openaiModelTimeout = setTimeout(() => {
       if (openaiApiKeyInp?.value.trim().length) {
-        fetchOpenAIModels();
+        fetchModelsForMain("openai");
+      } else {
+        providerModelCache.openai = [];
+        if (getCurrentProvider() === "openai") {
+          populateModelOptions("openai");
+        }
       }
     }, 1000);
   });
@@ -883,6 +1138,14 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
+  listen<AiStreamPayload>("ai-analysis-stream", (event) => {
+    processAiStreamPayload(event.payload);
+  });
+
+  listen<{ request_id: string; message: string }>("ai-analysis-error", (event) => {
+    handleAiStreamError(event.payload.request_id, event.payload.message);
+  });
+
   // Soniox transcript events
   const transcriptEl = document.getElementById("transcript");
   gateCountEl = document.getElementById("gate-count");
@@ -922,11 +1185,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       console.error("❌ Transcript element not found!");
     }
 
-    // Store transcript for OpenAI analysis
+    // Store transcript for AI analysis
     lastTranscript = event.payload;
 
     // Heuristic gating: only analyze when transcript is stable and meaningfully changed
-    if (openaiEnableChk?.checked) {
+    if (aiEnableChk?.checked) {
       const stable = stripTentative(lastTranscript).trim();
       const now = Date.now();
       const delta = stable.length - lastAnalyzedStable.length;
@@ -942,14 +1205,16 @@ window.addEventListener("DOMContentLoaded", async () => {
         console.log(`🔎 Running gated analysis (len=${stable.length}, Δ=${delta})`);
 
         // Use lightweight gate to decide whether to invoke main model (strict)
-        if (openaiApiKeyInp?.value.trim()) {
-          const key = openaiApiKeyInp.value.trim();
+        const provider = getCurrentProvider();
+        const key = getApiKeyForProvider(provider);
+        if (key) {
           const lastOut = aiAnalysisEl?.textContent || '';
           // Count a real gate request before invoking
           gateRuns += 1;
           if (gateCountEl) gateCountEl.textContent = `Gate: ${gateRuns}`;
 
           invoke<{ run: boolean; instruction?: string; reason?: string; confidence?: number }>("should_run_analysis_gate", {
+            provider,
             apiKey: key,
             model: null, // Let backend use configured gate_model
             assistantId: assistantSel?.value || null,
@@ -967,7 +1232,7 @@ window.addEventListener("DOMContentLoaded", async () => {
             if (res?.run) {
               lastAnalyzedStable = stable;
               lastAnalysisAt = now;
-              analyzeWithOpenAI(stable);
+              analyzeWithAI(stable);
             } else {
               console.log("⏭️ Skipping analysis due to gate decision.");
             }
@@ -981,7 +1246,7 @@ window.addEventListener("DOMContentLoaded", async () => {
           });
         } else {
           // Strict mode: no gate key => do not analyze
-          console.warn("Gate strict: missing OpenAI API key; skipping analysis.");
+          console.warn("Gate strict: missing AI provider API key; skipping analysis.");
         }
       }
     }

@@ -8,23 +8,25 @@ use std::{
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use futures_util::StreamExt;
 use serde::Serialize;
 use tauri::{Emitter, State};
 
-mod utils;
-mod audio;
-mod soniox;
-mod openai;
-mod gate;
-mod transcription;
 mod assistants;
+mod audio;
 mod config;
+mod gate;
+mod openai;
+mod openrouter;
+mod soniox;
 #[cfg(test)]
 mod soniox_test;
-pub use audio::AudioWriter;
+mod transcription;
+mod utils;
+use crate::assistants::{Assistant, AssistantManager};
+use crate::config::{AiProvider, AppConfig, ConfigManager};
 use crate::utils::log_to_file;
-use crate::assistants::{AssistantManager, Assistant};
-use crate::config::{ConfigManager, AppConfig};
+pub use audio::AudioWriter;
 
 pub mod lame_encoder;
 
@@ -145,12 +147,23 @@ impl Default for AppState {
 
 impl AppState {
     // Atomic state transition with validation
-    fn transition_state(&self, from: RecordingState, to: RecordingState, app: &tauri::AppHandle) -> Result<(), String> {
-        let mut current_state = self.current_state.lock().map_err(|_| "Failed to lock state")?;
+    fn transition_state(
+        &self,
+        from: RecordingState,
+        to: RecordingState,
+        app: &tauri::AppHandle,
+    ) -> Result<(), String> {
+        let mut current_state = self
+            .current_state
+            .lock()
+            .map_err(|_| "Failed to lock state")?;
 
         // Validate transition is allowed
         if *current_state != from {
-            return Err(format!("Invalid state transition: expected {:?}, found {:?}", from, *current_state));
+            return Err(format!(
+                "Invalid state transition: expected {:?}, found {:?}",
+                from, *current_state
+            ));
         }
 
         // Update timestamps for state tracking
@@ -161,7 +174,7 @@ impl AppState {
                     start_time: format!("{:?}", now),
                     elapsed_ms: 0,
                 }
-            },
+            }
             RecordingState::Paused { .. } => {
                 if let Some(session) = self.recording_session.lock().unwrap().as_ref() {
                     let elapsed = session.start_time.elapsed() + session.total_elapsed;
@@ -172,7 +185,7 @@ impl AppState {
                 } else {
                     return Err("No recording session found for pause".to_string());
                 }
-            },
+            }
             _ => to,
         };
 
@@ -194,47 +207,78 @@ impl AppState {
 
     // Update writing enabled state atomically
     fn set_writing_enabled(&self, enabled: bool) -> Result<(), String> {
-        *self.is_writing_enabled.lock().map_err(|_| "Failed to lock writing state")? = enabled;
+        *self
+            .is_writing_enabled
+            .lock()
+            .map_err(|_| "Failed to lock writing state")? = enabled;
         Ok(())
     }
 
     // Check if writing is enabled
     fn is_writing_enabled(&self) -> bool {
-        *self.is_writing_enabled.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .is_writing_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+fn resolve_provider(provider: Option<String>, state: &State<'_, AppState>) -> AiProvider {
+    if let Some(force) = provider {
+        match force.to_lowercase().as_str() {
+            "openrouter" => AiProvider::Openrouter,
+            _ => AiProvider::Openai,
+        }
+    } else {
+        let cfg = state.app_config.lock().unwrap();
+        cfg.ui.ai_provider.clone()
     }
 }
 
 // Command processing functions
 impl AppState {
-    fn process_command(&self, command: RecordingCommand, app: &tauri::AppHandle) -> Result<String, String> {
+    fn process_command(
+        &self,
+        command: RecordingCommand,
+        app: &tauri::AppHandle,
+    ) -> Result<String, String> {
         match command {
-            RecordingCommand::Start { path, format, quality } => {
-                self.handle_start_command(path, format, quality, app)
-            },
-            RecordingCommand::Pause => {
-                self.handle_pause_command(app)
-            },
-            RecordingCommand::Resume => {
-                self.handle_resume_command(app)
-            },
-            RecordingCommand::Stop => {
-                self.handle_stop_command(app)
-            },
+            RecordingCommand::Start {
+                path,
+                format,
+                quality,
+            } => self.handle_start_command(path, format, quality, app),
+            RecordingCommand::Pause => self.handle_pause_command(app),
+            RecordingCommand::Resume => self.handle_resume_command(app),
+            RecordingCommand::Stop => self.handle_stop_command(app),
         }
     }
 
-    fn handle_start_command(&self, path: PathBuf, format: String, quality: String, app: &tauri::AppHandle) -> Result<String, String> {
+    fn handle_start_command(
+        &self,
+        path: PathBuf,
+        format: String,
+        quality: String,
+        app: &tauri::AppHandle,
+    ) -> Result<String, String> {
         // Validate we can start
         let current_state = self.get_current_state()?;
         if current_state != RecordingState::Idle {
-            return Err(format!("Cannot start recording in state: {:?}", current_state));
+            return Err(format!(
+                "Cannot start recording in state: {:?}",
+                current_state
+            ));
         }
 
         // Transition to Starting state
         self.transition_state(RecordingState::Idle, RecordingState::Starting, app)?;
 
         // Create recording session
-        let config = RecordingConfig { path: path.clone(), format, quality };
+        let config = RecordingConfig {
+            path: path.clone(),
+            format,
+            quality,
+        };
         let session = RecordingSession {
             config: config.clone(),
             start_time: Instant::now(),
@@ -242,16 +286,23 @@ impl AppState {
             state: RecordingState::Starting,
         };
 
-        *self.recording_session.lock().map_err(|_| "Failed to lock session")? = Some(session);
+        *self
+            .recording_session
+            .lock()
+            .map_err(|_| "Failed to lock session")? = Some(session);
 
         // Enable writing
         self.set_writing_enabled(true)?;
 
         // Transition to Recording state
-        self.transition_state(RecordingState::Starting, RecordingState::Recording {
-            start_time: format!("{:?}", Instant::now()),
-            elapsed_ms: 0
-        }, app)?;
+        self.transition_state(
+            RecordingState::Starting,
+            RecordingState::Recording {
+                start_time: format!("{:?}", Instant::now()),
+                elapsed_ms: 0,
+            },
+            app,
+        )?;
 
         Ok(format!("Started recording to: {}", path.display()))
     }
@@ -265,14 +316,18 @@ impl AppState {
                 self.set_writing_enabled(false)?;
 
                 // Transition to Paused state
-                self.transition_state(current_state, RecordingState::Paused {
-                    pause_time: format!("{:?}", Instant::now()),
-                    elapsed_ms: 0
-                }, app)?;
+                self.transition_state(
+                    current_state,
+                    RecordingState::Paused {
+                        pause_time: format!("{:?}", Instant::now()),
+                        elapsed_ms: 0,
+                    },
+                    app,
+                )?;
 
                 Ok("Recording paused".to_string())
-            },
-            _ => Err(format!("Cannot pause in state: {:?}", current_state))
+            }
+            _ => Err(format!("Cannot pause in state: {:?}", current_state)),
         }
     }
 
@@ -294,14 +349,18 @@ impl AppState {
                 }
 
                 // Transition to Recording state
-                self.transition_state(RecordingState::Resuming, RecordingState::Recording {
-                    start_time: format!("{:?}", Instant::now()),
-                    elapsed_ms: 0,
-                }, app)?;
+                self.transition_state(
+                    RecordingState::Resuming,
+                    RecordingState::Recording {
+                        start_time: format!("{:?}", Instant::now()),
+                        elapsed_ms: 0,
+                    },
+                    app,
+                )?;
 
                 Ok("Recording resumed".to_string())
-            },
-            _ => Err(format!("Cannot resume in state: {:?}", current_state))
+            }
+            _ => Err(format!("Cannot resume in state: {:?}", current_state)),
         }
     }
 
@@ -332,8 +391,8 @@ impl AppState {
                 self.transition_state(RecordingState::Stopping, RecordingState::Idle, app)?;
 
                 Ok(path)
-            },
-            _ => Err(format!("Cannot stop in state: {:?}", current_state))
+            }
+            _ => Err(format!("Cannot stop in state: {:?}", current_state)),
         }
     }
 }
@@ -347,9 +406,15 @@ fn start_recording(
     quality: Option<String>,
 ) -> Result<String, String> {
     // Check if we can start using the new state system
-    let current_state = state.inner().get_current_state().map_err(|e| format!("State error: {}", e))?;
+    let current_state = state
+        .inner()
+        .get_current_state()
+        .map_err(|e| format!("State error: {}", e))?;
     if current_state != RecordingState::Idle {
-        return Err(format!("Recording already in progress: {:?}", current_state));
+        return Err(format!(
+            "Recording already in progress: {:?}",
+            current_state
+        ));
     }
 
     // Mark that we're in manual recording mode (not voice detection)
@@ -442,7 +507,8 @@ fn start_recording(
                     return;
                 }
                 if let Err(e) = encoder.init_params() {
-                    let _ = done_tx.send(Err(format!("Failed to initialize encoder params: {:?}", e)));
+                    let _ =
+                        done_tx.send(Err(format!("Failed to initialize encoder params: {:?}", e)));
                     return;
                 }
 
@@ -507,7 +573,7 @@ fn start_recording(
                 start_time: format!("{:?}", std::time::Instant::now()),
                 elapsed_ms: 0,
             },
-            &app_for_thread
+            &app_for_thread,
         );
 
         // Build stream with proper sample type
@@ -515,9 +581,30 @@ fn start_recording(
         let err_fn = |e| eprintln!("Stream error: {e}");
         let stream_cfg: cpal::StreamConfig = config.clone().into();
         let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => build_stream_f32(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone(), Arc::new(state_for_thread.clone())),
-            cpal::SampleFormat::I16 => build_stream_i16(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone(), Arc::new(state_for_thread.clone())),
-            cpal::SampleFormat::U16 => build_stream_u16(&device, &stream_cfg, writer_clone, err_fn, app_for_thread.clone(), Arc::new(state_for_thread.clone())),
+            cpal::SampleFormat::F32 => build_stream_f32(
+                &device,
+                &stream_cfg,
+                writer_clone,
+                err_fn,
+                app_for_thread.clone(),
+                Arc::new(state_for_thread.clone()),
+            ),
+            cpal::SampleFormat::I16 => build_stream_i16(
+                &device,
+                &stream_cfg,
+                writer_clone,
+                err_fn,
+                app_for_thread.clone(),
+                Arc::new(state_for_thread.clone()),
+            ),
+            cpal::SampleFormat::U16 => build_stream_u16(
+                &device,
+                &stream_cfg,
+                writer_clone,
+                err_fn,
+                app_for_thread.clone(),
+                Arc::new(state_for_thread.clone()),
+            ),
             _ => Err("Unsupported sample format".into()),
         };
         let stream = match stream {
@@ -608,15 +695,21 @@ fn arm_auto_recording(
         let sample_rate = config.sample_rate().0 as usize;
         let channels = config.channels() as usize;
         let pre_roll_capacity = ((pre_roll_ms as usize) * sample_rate / 1000) * channels;
-        let mut prebuf: std::collections::VecDeque<i16> = std::collections::VecDeque::with_capacity(pre_roll_capacity + 1);
+        let mut prebuf: std::collections::VecDeque<i16> =
+            std::collections::VecDeque::with_capacity(pre_roll_capacity + 1);
 
         // Ensure writer and path exist (create on first arm, reuse on resume)
         {
             let mut path_guard = state_for_thread.vad_session_path.lock().unwrap();
             if path_guard.is_none() {
-                let file_extension = match target_format.as_str() { "mp3" => "mp3", _ => "wav" };
+                let file_extension = match target_format.as_str() {
+                    "mp3" => "mp3",
+                    _ => "wav",
+                };
                 let mut base = dirs_next::document_dir().unwrap_or_else(|| std::env::temp_dir());
-                let ts = chrono::Local::now().format(&format!("recording-%Y%m%d-%H%M%S.{}", file_extension)).to_string();
+                let ts = chrono::Local::now()
+                    .format(&format!("recording-%Y%m%d-%H%M%S.{}", file_extension))
+                    .to_string();
                 base.push(ts);
                 *path_guard = Some(base);
             }
@@ -624,22 +717,81 @@ fn arm_auto_recording(
         {
             let mut writer_guard = state_for_thread.writer_state.lock().unwrap();
             if writer_guard.is_none() {
-                let path = state_for_thread.vad_session_path.lock().unwrap().as_ref().cloned().unwrap();
+                let path = state_for_thread
+                    .vad_session_path
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .cloned()
+                    .unwrap();
                 let writer = match target_format.as_str() {
                     "mp3" => {
-                        let mut encoder = match lame_encoder::Lame::new() { Some(enc) => enc, None => { let _ = app_for_thread.emit("vad-error", "Failed to initialize LAME encoder"); return; } };
-                        if let Err(e) = encoder.set_sample_rate(sample_rate as u32) { let _ = app_for_thread.emit("vad-error", format!("set sr: {:?}", e)); return; }
-                        if let Err(e) = encoder.set_channels(channels as u8) { let _ = app_for_thread.emit("vad-error", format!("set ch: {:?}", e)); return; }
-                        let (bitrate, quality_level) = match target_quality.as_str() { "verylow" => (64,9), "low" => (128,7), "medium" => (192,5), "high" => (320,2), _ => (192,5) };
-                        if let Err(e) = encoder.set_kilobitrate(bitrate) { let _ = app_for_thread.emit("vad-error", format!("set br: {:?}", e)); return; }
-                        if let Err(e) = encoder.set_quality(quality_level) { let _ = app_for_thread.emit("vad-error", format!("set q: {:?}", e)); return; }
-                        if let Err(e) = encoder.init_params() { let _ = app_for_thread.emit("vad-error", format!("init params: {:?}", e)); return; }
-                        let file = match File::create(&path) { Ok(f) => f, Err(e) => { let _ = app_for_thread.emit("vad-error", format!("create mp3 file: {e}")); return; } };
-                        AudioWriter::Mp3 { encoder, file, buffer: Vec::new(), channels: channels as u16 }
+                        let mut encoder = match lame_encoder::Lame::new() {
+                            Some(enc) => enc,
+                            None => {
+                                let _ = app_for_thread
+                                    .emit("vad-error", "Failed to initialize LAME encoder");
+                                return;
+                            }
+                        };
+                        if let Err(e) = encoder.set_sample_rate(sample_rate as u32) {
+                            let _ = app_for_thread.emit("vad-error", format!("set sr: {:?}", e));
+                            return;
+                        }
+                        if let Err(e) = encoder.set_channels(channels as u8) {
+                            let _ = app_for_thread.emit("vad-error", format!("set ch: {:?}", e));
+                            return;
+                        }
+                        let (bitrate, quality_level) = match target_quality.as_str() {
+                            "verylow" => (64, 9),
+                            "low" => (128, 7),
+                            "medium" => (192, 5),
+                            "high" => (320, 2),
+                            _ => (192, 5),
+                        };
+                        if let Err(e) = encoder.set_kilobitrate(bitrate) {
+                            let _ = app_for_thread.emit("vad-error", format!("set br: {:?}", e));
+                            return;
+                        }
+                        if let Err(e) = encoder.set_quality(quality_level) {
+                            let _ = app_for_thread.emit("vad-error", format!("set q: {:?}", e));
+                            return;
+                        }
+                        if let Err(e) = encoder.init_params() {
+                            let _ =
+                                app_for_thread.emit("vad-error", format!("init params: {:?}", e));
+                            return;
+                        }
+                        let file = match File::create(&path) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                let _ = app_for_thread
+                                    .emit("vad-error", format!("create mp3 file: {e}"));
+                                return;
+                            }
+                        };
+                        AudioWriter::Mp3 {
+                            encoder,
+                            file,
+                            buffer: Vec::new(),
+                            channels: channels as u16,
+                        }
                     }
                     _ => {
-                        let spec = hound::WavSpec { channels: channels as u16, sample_rate: sample_rate as u32, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
-                        let wav_writer = match hound::WavWriter::create(&path, spec) { Ok(w) => w, Err(e) => { let _ = app_for_thread.emit("vad-error", format!("create wav: {e}")); return; } };
+                        let spec = hound::WavSpec {
+                            channels: channels as u16,
+                            sample_rate: sample_rate as u32,
+                            bits_per_sample: 16,
+                            sample_format: hound::SampleFormat::Int,
+                        };
+                        let wav_writer = match hound::WavWriter::create(&path, spec) {
+                            Ok(w) => w,
+                            Err(e) => {
+                                let _ =
+                                    app_for_thread.emit("vad-error", format!("create wav: {e}"));
+                                return;
+                            }
+                        };
                         AudioWriter::Wav(wav_writer)
                     }
                 };
@@ -648,11 +800,21 @@ fn arm_auto_recording(
         }
 
         // Reuse shared writer and path from state
-        let session_writer: Arc<Mutex<Option<AudioWriter>>> = Arc::clone(&state_for_thread.writer_state);
-        let session_path = state_for_thread.vad_session_path.lock().unwrap().as_ref().cloned().unwrap_or_else(|| std::env::temp_dir().join("recording.wav"));
+        let session_writer: Arc<Mutex<Option<AudioWriter>>> =
+            Arc::clone(&state_for_thread.writer_state);
+        let session_path = state_for_thread
+            .vad_session_path
+            .lock()
+            .unwrap()
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| std::env::temp_dir().join("recording.wav"));
         let session_writer_cb = Arc::clone(&session_writer);
 
-        log_to_file(&format!("Created continuous recording file: {}", session_path.to_string_lossy()));
+        log_to_file(&format!(
+            "Created continuous recording file: {}",
+            session_path.to_string_lossy()
+        ));
         let mut smoothed = 0.0f32;
         let mut above_ms = 0u32;
         let mut below_ms = 0u32;
@@ -702,7 +864,10 @@ fn arm_auto_recording(
                     let noise_avg = (noise_energy_accum / noise_time_accum_ms) as f32;
                     let dyn_thr = (noise_avg * 6.0).max(noise_peak_max * 0.6).max(0.01);
                     threshold_eff = threshold_eff.max(dyn_thr);
-                    log_to_file(&format!("Threshold calibrated: {:.4} (noise_avg={:.4}, dyn_thr={:.4})", threshold_eff, noise_avg, dyn_thr));
+                    log_to_file(&format!(
+                        "Threshold calibrated: {:.4} (noise_avg={:.4}, dyn_thr={:.4})",
+                        threshold_eff, noise_avg, dyn_thr
+                    ));
                     let _ = app_events.emit("vad-threshold", format!("{:.4}", threshold_eff));
                 }
             }
@@ -716,16 +881,30 @@ fn arm_auto_recording(
             }
 
             // Voice detection with continuous file recording
-            if cooldown_left_ms > 0 { cooldown_left_ms = cooldown_left_ms.saturating_sub(chunk_ms as u32); }
+            if cooldown_left_ms > 0 {
+                cooldown_left_ms = cooldown_left_ms.saturating_sub(chunk_ms as u32);
+            }
 
             // Zero-crossing rate heuristic to reject constant hum
-            let mut zc = 0u32; let step = channels.max(1); let mut prev = 0i16;
-            for (i, &s) in as_i16.iter().step_by(step).enumerate() { if i > 0 && ((s ^ prev) < 0) { zc += 1; } prev = s; }
-            let zcr = if chunk_ms > 0.0 { (zc as f32) * 1000.0 / chunk_ms } else { 0.0 };
+            let mut zc = 0u32;
+            let step = channels.max(1);
+            let mut prev = 0i16;
+            for (i, &s) in as_i16.iter().step_by(step).enumerate() {
+                if i > 0 && ((s ^ prev) < 0) {
+                    zc += 1;
+                }
+                prev = s;
+            }
+            let zcr = if chunk_ms > 0.0 {
+                (zc as f32) * 1000.0 / chunk_ms
+            } else {
+                0.0
+            };
             let zcr_ok = zcr > 50.0;
 
             // More lenient voice detection - removed strict peak requirement and ZCR
-            let voice_detected = cooldown_left_ms == 0 && (smoothed > threshold_eff || peak > threshold_eff * 0.8);
+            let voice_detected =
+                cooldown_left_ms == 0 && (smoothed > threshold_eff || peak > threshold_eff * 0.8);
 
             // Log detection attempts every second for debugging
             static mut DEBUG_COUNTER: u32 = 0;
@@ -740,7 +919,8 @@ fn arm_auto_recording(
 
             if voice_detected {
                 above_ms += chunk_ms as u32;
-                if above_ms % 100 == 0 { // Log every 100ms while detecting voice
+                if above_ms % 100 == 0 {
+                    // Log every 100ms while detecting voice
                     log_to_file(&format!("Voice detected: {}ms (smoothed={:.3}, peak={:.3}, threshold={:.3}, zcr={:.1})", above_ms, smoothed, peak, threshold_eff, zcr));
                 }
 
@@ -749,26 +929,37 @@ fn arm_auto_recording(
                     is_recording_voice = true;
                     // Update global state for Soniox
                     *state_for_thread.voice_currently_detected.lock().unwrap() = true;
-                    log_to_file(&format!("Started recording voice after {}ms of speech", above_ms));
+                    log_to_file(&format!(
+                        "Started recording voice after {}ms of speech",
+                        above_ms
+                    ));
                     let _ = app_events.emit("vad-segment-start", "");
 
                     // Write pre-roll buffer to the continuous file
                     if let Some(w) = session_writer_cb.lock().unwrap().as_mut() {
-                        log_to_file(&format!("Writing pre-roll buffer with {} samples", prebuf.len()));
-                        for &s in prebuf.iter() { let _ = w.write_sample(s); }
+                        log_to_file(&format!(
+                            "Writing pre-roll buffer with {} samples",
+                            prebuf.len()
+                        ));
+                        for &s in prebuf.iter() {
+                            let _ = w.write_sample(s);
+                        }
                     }
                 }
 
                 // Write current audio to file if we're recording voice
                 if is_recording_voice {
                     if let Some(w) = session_writer_cb.lock().unwrap().as_mut() {
-                        for &s in as_i16 { let _ = w.write_sample(s); }
+                        for &s in as_i16 {
+                            let _ = w.write_sample(s);
+                        }
                     }
                 }
 
                 below_ms = 0; // Reset silence counter
             } else {
-                if above_ms > 0 { // Log when voice detection stops
+                if above_ms > 0 {
+                    // Log when voice detection stops
                     log_to_file(&format!("Voice detection stopped at {}ms (smoothed={:.3}, peak={:.3}, threshold={:.3}, zcr={:.1}, cooldown={}ms)", above_ms, smoothed, peak, threshold_eff, zcr, cooldown_left_ms));
                 }
                 above_ms = 0;
@@ -779,7 +970,9 @@ fn arm_auto_recording(
 
                     // Continue writing even during silence (to maintain continuity)
                     if let Some(w) = session_writer_cb.lock().unwrap().as_mut() {
-                        for &s in as_i16 { let _ = w.write_sample(s); }
+                        for &s in as_i16 {
+                            let _ = w.write_sample(s);
+                        }
                     }
 
                     // Stop recording after enough silence
@@ -789,7 +982,10 @@ fn arm_auto_recording(
                         *state_for_thread.voice_currently_detected.lock().unwrap() = false;
                         below_ms = 0;
                         cooldown_left_ms = cooldown_ms_default;
-                        log_to_file(&format!("Stopped recording after {}ms of silence", silence_ms));
+                        log_to_file(&format!(
+                            "Stopped recording after {}ms of silence",
+                            silence_ms
+                        ));
                     }
                 }
             }
@@ -813,26 +1009,32 @@ fn arm_auto_recording(
                 let data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     // convert to i16 interleaved
                     let mut buf: Vec<i16> = Vec::with_capacity(data.len());
-                    for &x in data { buf.push((x.clamp(-1.0,1.0) * i16::MAX as f32) as i16); }
+                    for &x in data {
+                        buf.push((x.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+                    }
                     process_chunk(&buf);
                 };
                 device.build_input_stream(&cfg, data_fn, err_fn, None)
             }
             cpal::SampleFormat::I16 => {
                 let cfg: cpal::StreamConfig = config.clone().into();
-                let data_fn = move |data: &[i16], _: &cpal::InputCallbackInfo| { process_chunk(data); };
+                let data_fn = move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    process_chunk(data);
+                };
                 device.build_input_stream(&cfg, data_fn, err_fn, None)
             }
             cpal::SampleFormat::U16 => {
                 let cfg: cpal::StreamConfig = config.clone().into();
                 let data_fn = move |data: &[u16], _: &cpal::InputCallbackInfo| {
                     let mut buf: Vec<i16> = Vec::with_capacity(data.len());
-                    for &x in data { buf.push((x as i32 - 32768) as i16); }
+                    for &x in data {
+                        buf.push((x as i32 - 32768) as i16);
+                    }
                     process_chunk(&buf);
                 };
                 device.build_input_stream(&cfg, data_fn, err_fn, None)
             }
-            _ => Err(cpal::BuildStreamError::StreamConfigNotSupported)
+            _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
         };
         let Ok(stream) = stream else {
             let _ = app_for_thread.emit("vad-error", "build stream failed");
@@ -869,7 +1071,10 @@ fn disarm_auto_recording(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn finalize_auto_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
+fn finalize_auto_recording(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> Result<String, String> {
     // Ensure stream is not active
     if state.inner().stop_tx.lock().unwrap().is_some() {
         return Err("Please pause/stop the stream before finalizing".into());
@@ -896,8 +1101,12 @@ fn finalize_auto_recording(app: tauri::AppHandle, state: State<AppState>) -> Res
     };
 
     match &res {
-        Ok(p) => { let _ = app.emit("vad-segment-saved", p.clone()); },
-        Err(e) => { let _ = app.emit("vad-error", e.clone()); },
+        Ok(p) => {
+            let _ = app.emit("vad-segment-saved", p.clone());
+        }
+        Err(e) => {
+            let _ = app.emit("vad-error", e.clone());
+        }
     }
 
     // Clear session path after finalization attempt
@@ -911,8 +1120,12 @@ fn stop_recording(state: State<AppState>) -> Result<String, String> {
     let tx_opt = state.inner().stop_tx.lock().unwrap().take();
     let done_rx_opt = state.inner().done_rx.lock().unwrap().take();
 
-    let Some(tx) = tx_opt else { return Err("No active recording".into()); };
-    let Some(done_rx) = done_rx_opt else { return Err("Internal error: no completion channel".into()); };
+    let Some(tx) = tx_opt else {
+        return Err("No active recording".into());
+    };
+    let Some(done_rx) = done_rx_opt else {
+        return Err("Internal error: no completion channel".into());
+    };
 
     // Signal stop and wait for completion.
     let _ = tx.send(());
@@ -924,19 +1137,15 @@ fn stop_recording(state: State<AppState>) -> Result<String, String> {
 
 // New pause/resume commands using the enhanced state management
 #[tauri::command]
-fn pause_recording(
-    app: tauri::AppHandle,
-    state: State<AppState>,
-) -> Result<String, String> {
+fn pause_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     state.inner().process_command(RecordingCommand::Pause, &app)
 }
 
 #[tauri::command]
-fn resume_recording(
-    app: tauri::AppHandle,
-    state: State<AppState>,
-) -> Result<String, String> {
-    state.inner().process_command(RecordingCommand::Resume, &app)
+fn resume_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
+    state
+        .inner()
+        .process_command(RecordingCommand::Resume, &app)
 }
 
 #[tauri::command]
@@ -946,16 +1155,23 @@ fn get_recording_state(state: State<AppState>) -> Result<RecordingState, String>
 
 // Soniox Tauri commands
 #[tauri::command]
-fn start_soniox_session(app: tauri::AppHandle, state: State<AppState>, mut opts: soniox::SonioxOptions) -> Result<(), String> {
+fn start_soniox_session(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    mut opts: soniox::SonioxOptions,
+) -> Result<(), String> {
     if state.inner().soniox_tx.lock().unwrap().is_some() {
         return Err("Soniox session already running".into());
     }
     if opts.api_key.trim().is_empty() {
         // Try environment variable
-        if let Ok(k) = std::env::var("SONIOX_API_KEY") { opts.api_key = k; }
+        if let Ok(k) = std::env::var("SONIOX_API_KEY") {
+            opts.api_key = k;
+        }
         // Try config file: config/soniox.local.json
         if opts.api_key.trim().is_empty() {
-            let mut cfg_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let mut cfg_path =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             cfg_path.push("config/soniox.local.json");
             if let Ok(txt) = std::fs::read_to_string(&cfg_path) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&txt) {
@@ -969,8 +1185,13 @@ fn start_soniox_session(app: tauri::AppHandle, state: State<AppState>, mut opts:
             return Err("Missing Soniox API key. Provide api_key, SONIOX_API_KEY env, or config/soniox.local.json".into());
         }
     }
-    log_to_file(&format!("Transcription: starting provider Soniox with key: {}...", &opts.api_key[..8]));
-    let handle = tauri::async_runtime::block_on(transcription::providers::soniox_adapter::start_session(app, opts))?;
+    log_to_file(&format!(
+        "Transcription: starting provider Soniox with key: {}...",
+        &opts.api_key[..8]
+    ));
+    let handle = tauri::async_runtime::block_on(
+        transcription::providers::soniox_adapter::start_session(app, opts),
+    )?;
     *state.inner().soniox_tx.lock().unwrap() = Some(handle.tx);
     *state.inner().transcriber_kind.lock().unwrap() = Some(transcription::ProviderKind::Soniox);
     log_to_file("Transcription provider started: Soniox");
@@ -985,7 +1206,164 @@ fn stop_soniox_session(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn analyze_with_openai(transcript: String, api_key: String, model: Option<String>, assistant_id: Option<String>, last_output: Option<String>, state: State<'_, AppState>) -> Result<String, String> {
+async fn stream_ai_analysis(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    provider: Option<String>,
+    api_key: String,
+    model: Option<String>,
+    assistant_id: Option<String>,
+    request_id: String,
+    transcript: String,
+    last_output: Option<String>,
+) -> Result<(), String> {
+    let api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err("AI provider API key is required".into());
+    }
+
+    let provider_kind = resolve_provider(provider, &state);
+
+    let (system_prompt, output_policy) = {
+        let manager = state.assistant_manager.lock().unwrap();
+        let assistant = if let Some(id) = assistant_id {
+            manager
+                .get_assistant(&id)
+                .unwrap_or_else(|| manager.get_default_assistant())
+        } else {
+            manager.get_default_assistant()
+        };
+        (
+            assistant.system_prompt.clone(),
+            assistant.output_policy.clone(),
+        )
+    };
+
+    let selected_model = {
+        let config = state.app_config.lock().unwrap();
+        match provider_kind {
+            AiProvider::Openrouter => model.unwrap_or_else(|| config.openrouter.model.clone()),
+            AiProvider::Openai => model.unwrap_or_else(|| config.openai.model.clone()),
+        }
+    };
+
+    let trimmed_transcript = transcript.trim().to_string();
+    if trimmed_transcript.is_empty() {
+        let payload = AiStreamChunk {
+            request_id,
+            segment: None,
+            final_text: Some("No conversation to analyze yet.".to_string()),
+            done: true,
+        };
+        app.emit("ai-analysis-stream", payload)
+            .map_err(|e| format!("Failed to emit AI stream event: {}", e))?;
+        return Ok(());
+    }
+
+    match provider_kind {
+        AiProvider::Openai => {
+            let opts = openai::OpenAIOptions {
+                api_key,
+                model: selected_model,
+                system_prompt,
+                output_policy,
+            };
+            match openai::analyze_conversation(opts, trimmed_transcript, last_output.clone()).await
+            {
+                Ok(result) => {
+                    let payload = AiStreamChunk {
+                        request_id,
+                        segment: None,
+                        final_text: Some(result.clone()),
+                        done: true,
+                    };
+                    app.emit("ai-analysis-stream", payload)
+                        .map_err(|e| format!("Failed to emit AI stream event: {}", e))?;
+                    Ok(())
+                }
+                Err(err) => {
+                    let payload = AiStreamError {
+                        request_id,
+                        message: err.clone(),
+                    };
+                    app.emit("ai-analysis-error", payload)
+                        .map_err(|e| format!("Failed to emit AI error event: {}", e))?;
+                    Err(err)
+                }
+            }
+        }
+        AiProvider::Openrouter => {
+            let messages = openrouter::compose_messages(
+                &system_prompt,
+                &output_policy,
+                &trimmed_transcript,
+                last_output.as_deref(),
+            );
+            let request = openrouter::build_chat_request(&selected_model, messages, 500)?;
+            let client = openrouter::build_client(&api_key)?;
+            let mut stream = client.stream_chat_completion(&request).await.map_err(|e| {
+                log_to_file(&format!("OpenRouter: Stream error: {}", e));
+                format!("OpenRouter stream error: {}", e)
+            })?;
+
+            let mut full_text = String::new();
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(chunk) => {
+                        if let Some(content) =
+                            chunk.choices.first().and_then(|choice| choice.content())
+                        {
+                            if content.is_empty() {
+                                continue;
+                            }
+                            full_text.push_str(content);
+                            let payload = AiStreamChunk {
+                                request_id: request_id.clone(),
+                                segment: Some(content.to_string()),
+                                final_text: None,
+                                done: false,
+                            };
+                            app.emit("ai-analysis-stream", payload)
+                                .map_err(|e| format!("Failed to emit AI stream event: {}", e))?;
+                        }
+                    }
+                    Err(e) => {
+                        let message = format!("OpenRouter stream chunk error: {}", e);
+                        log_to_file(&message);
+                        let payload = AiStreamError {
+                            request_id: request_id.clone(),
+                            message: message.clone(),
+                        };
+                        app.emit("ai-analysis-error", payload).map_err(|emit_err| {
+                            format!("Failed to emit AI error event: {}", emit_err)
+                        })?;
+                        return Err(message);
+                    }
+                }
+            }
+
+            let payload = AiStreamChunk {
+                request_id,
+                segment: None,
+                final_text: Some(full_text),
+                done: true,
+            };
+            app.emit("ai-analysis-stream", payload)
+                .map_err(|e| format!("Failed to emit AI stream event: {}", e))?;
+            Ok(())
+        }
+    }
+}
+
+#[tauri::command]
+async fn analyze_with_openai(
+    transcript: String,
+    api_key: String,
+    model: Option<String>,
+    assistant_id: Option<String>,
+    last_output: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     if api_key.is_empty() {
         return Err("OpenAI API key is required".to_string());
     }
@@ -993,11 +1371,16 @@ async fn analyze_with_openai(transcript: String, api_key: String, model: Option<
     let (system_prompt, output_policy) = {
         let manager = state.assistant_manager.lock().unwrap();
         let assistant = if let Some(id) = assistant_id {
-            manager.get_assistant(&id).unwrap_or_else(|| manager.get_default_assistant())
+            manager
+                .get_assistant(&id)
+                .unwrap_or_else(|| manager.get_default_assistant())
         } else {
             manager.get_default_assistant()
         };
-        (assistant.system_prompt.clone(), assistant.output_policy.clone())
+        (
+            assistant.system_prompt.clone(),
+            assistant.output_policy.clone(),
+        )
     };
 
     let opts = openai::OpenAIOptions {
@@ -1018,8 +1401,23 @@ struct GateDecision {
     confidence: Option<f32>,
 }
 
+#[derive(Serialize, Clone)]
+struct AiStreamChunk {
+    request_id: String,
+    segment: Option<String>,
+    final_text: Option<String>,
+    done: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct AiStreamError {
+    request_id: String,
+    message: String,
+}
+
 #[tauri::command]
 async fn should_run_analysis_gate(
+    provider: Option<String>,
     api_key: String,
     model: Option<String>,
     assistant_id: Option<String>,
@@ -1028,37 +1426,99 @@ async fn should_run_analysis_gate(
     last_output: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<GateDecision, String> {
-    if api_key.is_empty() {
-        return Err("OpenAI API key is required".to_string());
+    if api_key.trim().is_empty() {
+        return Err("AI provider API key is required".to_string());
     }
+
+    let provider_kind = resolve_provider(provider, &state);
 
     let (system_prompt, gate_instructions) = {
         let manager = state.assistant_manager.lock().unwrap();
         let assistant = if let Some(id) = assistant_id {
-            manager.get_assistant(&id).unwrap_or_else(|| manager.get_default_assistant())
+            manager
+                .get_assistant(&id)
+                .unwrap_or_else(|| manager.get_default_assistant())
         } else {
             manager.get_default_assistant()
         };
-        (assistant.system_prompt.clone(), assistant.gate_instructions.clone())
+        (
+            assistant.system_prompt.clone(),
+            assistant.gate_instructions.clone(),
+        )
     };
 
-    let gate_model = {
+    let default_gate_model = {
         let config = state.app_config.lock().unwrap();
-        config.openai.gate_model.clone()
+        match provider_kind {
+            AiProvider::Openrouter => config.openrouter.gate_model.clone(),
+            AiProvider::Openai => config.openai.gate_model.clone(),
+        }
     };
 
-    let opts = gate::GateOptions {
-        api_key,
-        model: model.unwrap_or(gate_model),
-        main_system_prompt: system_prompt,
-        gate_instructions,
+    let selected_model = model.unwrap_or(default_gate_model);
+
+    let gate_json = match provider_kind {
+        AiProvider::Openai => {
+            let opts = gate::GateOptions {
+                api_key: api_key.clone(),
+                model: selected_model.clone(),
+                main_system_prompt: system_prompt.clone(),
+                gate_instructions: gate_instructions.clone(),
+            };
+            gate::should_run_gate(
+                opts,
+                current_transcript.clone(),
+                previous_transcript.clone(),
+                last_output.clone(),
+            )
+            .await?
+        }
+        AiProvider::Openrouter => {
+            openrouter::run_gate(
+                &api_key,
+                &selected_model,
+                &system_prompt,
+                &gate_instructions,
+                current_transcript,
+                previous_transcript,
+                last_output,
+            )
+            .await?
+        }
     };
-    let g = gate::should_run_gate(opts, current_transcript, previous_transcript, last_output).await?;
-    Ok(GateDecision { run: g.run, instruction: g.instruction, reason: g.reason, confidence: g.confidence })
+
+    Ok(GateDecision {
+        run: gate_json.run,
+        instruction: gate_json.instruction,
+        reason: gate_json.reason,
+        confidence: gate_json.confidence,
+    })
 }
+
 #[tauri::command]
-async fn get_openai_models(api_key: String) -> Result<Vec<String>, String> {
-    openai::get_available_models(api_key).await
+async fn get_ai_models(
+    provider: Option<String>,
+    api_key: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    if api_key.trim().is_empty() {
+        return Err("AI provider API key is required".to_string());
+    }
+
+    let provider_kind = resolve_provider(provider, &state);
+    match provider_kind {
+        AiProvider::Openrouter => openrouter::list_models(&api_key).await,
+        AiProvider::Openai => openai::get_available_models(api_key).await,
+    }
+}
+
+#[tauri::command]
+async fn get_openrouter_credits(api_key: String) -> Result<openrouter::CreditSummary, String> {
+    if api_key.trim().is_empty() {
+        return Err("OpenRouter API key is required".to_string());
+    }
+
+    openrouter::get_credits(&api_key).await
 }
 
 #[tauri::command]
@@ -1186,7 +1646,10 @@ fn build_stream_f32(
         if let Ok(lock) = app_state.soniox_tx.lock() {
             if let Some(tx) = lock.as_ref() {
                 let _ = tx.try_send(soniox::AudioChunk {
-                    samples: data.iter().map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).collect(),
+                    samples: data
+                        .iter()
+                        .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+                        .collect(),
                     channels,
                     sample_rate,
                 });
@@ -1308,7 +1771,6 @@ fn build_stream_u16(
         .map_err(|e| format!("Build stream failed: {e}"))
 }
 
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1326,8 +1788,10 @@ pub fn run() {
             get_recording_state,
             start_soniox_session,
             stop_soniox_session,
+            stream_ai_analysis,
             analyze_with_openai,
-            get_openai_models,
+            get_ai_models,
+            get_openrouter_credits,
             should_run_analysis_gate,
             load_assistants,
             get_assistants,

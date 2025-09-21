@@ -84,18 +84,27 @@
               </label>
 
               <label class="setting">
+                <span>Provider</span>
+                <select id="ai-provider">
+                  <option value="openai">OpenAI</option>
+                  <option value="openrouter">OpenRouter</option>
+                </select>
+              </label>
+
+              <label class="setting">
                 <span>Model</span>
-                <select id="openai-model">
-                  <option value="">Loading models...</option>
+                <select id="ai-model">
+                  <option value="">Enter API key to load models...</option>
                 </select>
               </label>
 
               <label class="setting checkbox-setting">
-                <input id="openai-enable" type="checkbox" />
+                <input id="ai-enable" type="checkbox" />
                 <span>AI Analysis</span>
               </label>
 
-              <span id="openai-status" class="status-indicator openai-status ready">Ready</span>
+              <span id="ai-status" class="status-indicator ai-status ready">Ready</span>
+              <span id="openrouter-credits" class="status-indicator openrouter-credits" style="display: none;"></span>
               <span id="gate-count" class="status-indicator gate-count">Gate: 0</span>
               <span id="model-count" class="status-indicator model-count">Model: 0</span>
               <span id="gate-last" class="status-indicator gate-last" title="">Decision: -</span>
@@ -151,6 +160,7 @@
     <!-- Hidden inputs for backward compatibility with existing code -->
     <input id="soniox-api" type="hidden" />
     <input id="openai-api" type="hidden" />
+    <input id="openrouter-api" type="hidden" />
 
     <!-- Configuration Modal -->
     <div id="config-modal" class="modal hidden">
@@ -181,7 +191,24 @@
           </div>
 
           <div class="config-section">
-            <h3>OpenAI (AI Analysis)</h3>
+            <h3>AI Provider</h3>
+            <div class="config-row">
+              <label>Default Provider:</label>
+              <select id="config-ai-provider">
+                <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <label>
+                <input id="config-ai-enable" type="checkbox">
+                Enable AI Analysis
+              </label>
+            </div>
+          </div>
+
+          <div class="config-section">
+            <h3>OpenAI Settings</h3>
             <div class="config-row">
               <label>API Key:</label>
               <input id="config-openai-key" type="password" placeholder="sk-...">
@@ -198,11 +225,29 @@
                 <option value="">Enter API key to load models...</option>
               </select>
             </div>
+          </div>
+
+          <div class="config-section">
+            <h3>OpenRouter Settings</h3>
             <div class="config-row">
-              <label>
-                <input id="config-openai-enable" type="checkbox">
-                Enable AI Analysis
-              </label>
+              <label>API Key:</label>
+              <input id="config-openrouter-key" type="password" placeholder="or-...">
+            </div>
+            <div class="config-row">
+              <label>Model:</label>
+              <select id="config-openrouter-model">
+                <option value="">Enter API key to load models...</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <label>Gate Model:</label>
+              <select id="config-openrouter-gate-model">
+                <option value="">Enter API key to load models...</option>
+              </select>
+            </div>
+            <div class="config-row">
+              <label>Credits:</label>
+              <span id="config-openrouter-credits">--</span>
             </div>
           </div>
 

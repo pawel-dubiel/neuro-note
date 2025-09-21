@@ -1,8 +1,8 @@
+use crate::utils::log_to_file;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use crate::utils::log_to_file;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assistant {
@@ -38,7 +38,10 @@ impl AssistantManager {
         let config_path = path.as_ref();
 
         if !config_path.exists() {
-            return Err(format!("Assistants config file not found at: {:?}", config_path));
+            return Err(format!(
+                "Assistants config file not found at: {:?}",
+                config_path
+            ));
         }
 
         match fs::read_to_string(config_path) {
@@ -58,41 +61,46 @@ impl AssistantManager {
                                 return Err(format!("Assistant '{}' has empty name", assistant.id));
                             }
                             if assistant.system_prompt.is_empty() {
-                                return Err(format!("Assistant '{}' has empty system_prompt", assistant.id));
+                                return Err(format!(
+                                    "Assistant '{}' has empty system_prompt",
+                                    assistant.id
+                                ));
                             }
                             assistants.insert(assistant.id.clone(), assistant);
                         }
 
                         // Validate default_assistant exists
                         if !assistants.contains_key(&config.default_assistant) {
-                            return Err(format!("Default assistant '{}' not found in assistants list", config.default_assistant));
+                            return Err(format!(
+                                "Default assistant '{}' not found in assistants list",
+                                config.default_assistant
+                            ));
                         }
 
-                        log_to_file(&format!("Successfully loaded {} assistants from config", assistants.len()));
+                        log_to_file(&format!(
+                            "Successfully loaded {} assistants from config",
+                            assistants.len()
+                        ));
 
                         Ok(Self {
                             assistants,
                             default_id: config.default_assistant,
                         })
                     }
-                    Err(e) => {
-                        Err(format!("Failed to parse assistants config JSON: {}", e))
-                    }
+                    Err(e) => Err(format!("Failed to parse assistants config JSON: {}", e)),
                 }
             }
-            Err(e) => {
-                Err(format!("Failed to read assistants config file: {}", e))
-            }
+            Err(e) => Err(format!("Failed to read assistants config file: {}", e)),
         }
     }
-
 
     pub fn get_assistant(&self, id: &str) -> Option<&Assistant> {
         self.assistants.get(id)
     }
 
     pub fn get_default_assistant(&self) -> &Assistant {
-        self.assistants.get(&self.default_id)
+        self.assistants
+            .get(&self.default_id)
             .unwrap_or_else(|| self.assistants.values().next().unwrap())
     }
 

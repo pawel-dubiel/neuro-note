@@ -1,7 +1,7 @@
+use crate::utils::log_to_file;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use crate::utils::log_to_file;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SonioxConfig {
@@ -22,6 +22,28 @@ pub struct OpenAIConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiProvider {
+    Openai,
+    Openrouter,
+}
+
+impl Default for AiProvider {
+    fn default() -> Self {
+        AiProvider::Openai
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterConfig {
+    pub api_key: String,
+    #[serde(default = "default_openrouter_model")]
+    pub model: String,
+    #[serde(default = "default_openrouter_gate_model")]
+    pub gate_model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordingConfig {
     #[serde(default = "default_format")]
     pub default_format: String,
@@ -35,29 +57,55 @@ pub struct RecordingConfig {
 pub struct UIConfig {
     #[serde(default)]
     pub enable_soniox: bool,
-    #[serde(default)]
-    pub enable_openai: bool,
+    #[serde(default, alias = "enable_openai")]
+    pub enable_ai: bool,
     #[serde(default = "default_assistant")]
     pub default_assistant: String,
+    #[serde(default = "AiProvider::default")]
+    pub ai_provider: AiProvider,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub soniox: SonioxConfig,
     pub openai: OpenAIConfig,
+    #[serde(default)]
+    pub openrouter: OpenRouterConfig,
     pub recording: RecordingConfig,
     pub ui: UIConfig,
 }
 
 // Default functions
-fn default_audio_format() -> String { "pcm_s16le".to_string() }
-fn default_translation() -> String { "none".to_string() }
-fn default_model() -> String { "gpt-4.1".to_string() }
-fn default_gate_model() -> String { "gpt-4.1-nano".to_string() }
-fn default_format() -> String { "mp3".to_string() }
-fn default_quality() -> String { "verylow".to_string() }
-fn default_auto_detect() -> bool { true }
-fn default_assistant() -> String { "general".to_string() }
+fn default_audio_format() -> String {
+    "pcm_s16le".to_string()
+}
+fn default_translation() -> String {
+    "none".to_string()
+}
+fn default_model() -> String {
+    "gpt-4.1".to_string()
+}
+fn default_gate_model() -> String {
+    "gpt-4.1-nano".to_string()
+}
+fn default_openrouter_model() -> String {
+    "deepseek/deepseek-chat-v3-0324:free".to_string()
+}
+fn default_openrouter_gate_model() -> String {
+    "deepseek/deepseek-chat-v3-0324:free".to_string()
+}
+fn default_format() -> String {
+    "mp3".to_string()
+}
+fn default_quality() -> String {
+    "verylow".to_string()
+}
+fn default_auto_detect() -> bool {
+    true
+}
+fn default_assistant() -> String {
+    "general".to_string()
+}
 
 impl Default for SonioxConfig {
     fn default() -> Self {
@@ -79,6 +127,16 @@ impl Default for OpenAIConfig {
     }
 }
 
+impl Default for OpenRouterConfig {
+    fn default() -> Self {
+        Self {
+            api_key: "".to_string(),
+            model: default_openrouter_model(),
+            gate_model: default_openrouter_gate_model(),
+        }
+    }
+}
+
 impl Default for RecordingConfig {
     fn default() -> Self {
         Self {
@@ -93,8 +151,9 @@ impl Default for UIConfig {
     fn default() -> Self {
         Self {
             enable_soniox: false,
-            enable_openai: false,
+            enable_ai: false,
             default_assistant: default_assistant(),
+            ai_provider: AiProvider::default(),
         }
     }
 }
@@ -104,6 +163,7 @@ impl Default for AppConfig {
         Self {
             soniox: SonioxConfig::default(),
             openai: OpenAIConfig::default(),
+            openrouter: OpenRouterConfig::default(),
             recording: RecordingConfig::default(),
             ui: UIConfig::default(),
         }
@@ -122,19 +182,17 @@ impl ConfigManager {
         }
 
         match fs::read_to_string(config_path) {
-            Ok(content) => {
-                match serde_json::from_str::<AppConfig>(&content) {
-                    Ok(config) => {
-                        log_to_file("Successfully loaded app configuration");
-                        Ok(config)
-                    }
-                    Err(e) => {
-                        let error = format!("Failed to parse config JSON: {}", e);
-                        log_to_file(&error);
-                        Err(error)
-                    }
+            Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
+                Ok(config) => {
+                    log_to_file("Successfully loaded app configuration");
+                    Ok(config)
                 }
-            }
+                Err(e) => {
+                    let error = format!("Failed to parse config JSON: {}", e);
+                    log_to_file(&error);
+                    Err(error)
+                }
+            },
             Err(e) => {
                 let error = format!("Failed to read config file: {}", e);
                 log_to_file(&error);
@@ -147,19 +205,17 @@ impl ConfigManager {
         let config_path = "../config/config.local.json";
 
         match serde_json::to_string_pretty(config) {
-            Ok(json_content) => {
-                match fs::write(config_path, json_content) {
-                    Ok(()) => {
-                        log_to_file("Successfully saved app configuration");
-                        Ok(())
-                    }
-                    Err(e) => {
-                        let error = format!("Failed to write config file: {}", e);
-                        log_to_file(&error);
-                        Err(error)
-                    }
+            Ok(json_content) => match fs::write(config_path, json_content) {
+                Ok(()) => {
+                    log_to_file("Successfully saved app configuration");
+                    Ok(())
                 }
-            }
+                Err(e) => {
+                    let error = format!("Failed to write config file: {}", e);
+                    log_to_file(&error);
+                    Err(error)
+                }
+            },
             Err(e) => {
                 let error = format!("Failed to serialize config: {}", e);
                 log_to_file(&error);

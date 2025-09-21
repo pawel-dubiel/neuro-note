@@ -1,33 +1,40 @@
 #[cfg(test)]
 mod soniox_tests {
-    use crate::soniox::{SonioxOptions, AudioChunk};
+    use crate::soniox::{AudioChunk, SonioxOptions};
 
     fn load_test_config() -> Result<SonioxOptions, String> {
-        let mut cfg_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        cfg_path.push("config/soniox.local.json");
+        let mut candidates = Vec::new();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        candidates.push(cwd.join("config/soniox.local.json"));
+        candidates.push(cwd.join("../config/soniox.local.json"));
 
-        if let Ok(txt) = std::fs::read_to_string(&cfg_path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&txt) {
-                let api_key = json.get("api_key")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing api_key in config")?
-                    .to_string();
+        for path in candidates {
+            if let Ok(txt) = std::fs::read_to_string(&path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    let api_key = json
+                        .get("api_key")
+                        .and_then(|v| v.as_str())
+                        .ok_or("Missing api_key in config")?
+                        .to_string();
 
-                let audio_format = json.get("audio_format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("pcm_s16le")
-                    .to_string();
+                    let audio_format = json
+                        .get("audio_format")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("pcm_s16le")
+                        .to_string();
 
-                let translation = json.get("translation")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("none")
-                    .to_string();
+                    let translation = json
+                        .get("translation")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("none")
+                        .to_string();
 
-                return Ok(SonioxOptions {
-                    api_key,
-                    audio_format,
-                    translation,
-                });
+                    return Ok(SonioxOptions {
+                        api_key,
+                        audio_format,
+                        translation,
+                    });
+                }
             }
         }
 
@@ -70,13 +77,12 @@ mod soniox_tests {
         use serde_json::json;
 
         let final_tokens = vec![
-            json!({"text": "Hello ", "is_final": true, "speaker": 1, "language": "en"}),
-            json!({"text": "world", "is_final": true, "speaker": 1, "language": "en"}),
+            json!({"text": "Hello ", "is_final": true, "speaker": "1", "language": "en"}),
+            json!({"text": "world", "is_final": true, "speaker": "1", "language": "en"}),
         ];
 
-        let non_final = vec![
-            json!({"text": "!", "is_final": false, "speaker": 1, "language": "en"})
-        ];
+        let non_final =
+            vec![json!({"text": "!", "is_final": false, "speaker": "1", "language": "en"})];
 
         let result = crate::soniox::render_tokens(&final_tokens, &non_final);
 
@@ -91,8 +97,8 @@ mod soniox_tests {
         use serde_json::json;
 
         let tokens = vec![
-            json!({"text": "Hello", "is_final": true, "speaker": 1, "language": "en"}),
-            json!({"text": "Hi there", "is_final": true, "speaker": 2, "language": "en"}),
+            json!({"text": "Hello", "is_final": true, "speaker": "1", "language": "en"}),
+            json!({"text": "Hi there", "is_final": true, "speaker": "2", "language": "en"}),
         ];
 
         let result = crate::soniox::render_tokens(&tokens, &vec![]);

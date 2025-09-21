@@ -259,9 +259,9 @@ input[type="checkbox"] {
 .soniox-status.error { color: #a94442; border-color: #ebccd1; background: #f2dede; }
 .soniox-status.off { color: #666; border-color: #ddd; background: #fafafa; }
 
-.openai-status.analyzing { color: #0066cc; border-color: #b3d9ff; background: #e6f3ff; }
-.openai-status.ready { color: #3c763d; border-color: #d6e9c6; background: #dff0d8; }
-.openai-status.error { color: #a94442; border-color: #ebccd1; background: #f2dede; }
+.ai-status.analyzing { color: #0066cc; border-color: #b3d9ff; background: #e6f3ff; }
+.ai-status.ready { color: #3c763d; border-color: #d6e9c6; background: #dff0d8; }
+.ai-status.error { color: #a94442; border-color: #ebccd1; background: #f2dede; }
 
 /* Audio Meter */
 .meter-section {
