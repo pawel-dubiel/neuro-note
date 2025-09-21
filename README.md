@@ -1,10 +1,10 @@
 # Voice Assistant Recorder
 
-A smart audio recording application that listens to your conversations and provides real-time speech-to-text transcription. Built for the future of AI-powered voice assistants.
+A smart audio recording application that listens to your conversations and provides real-time speech-to-text transcription. Built for the AI-powered voice assistants.
 
 ## What it does
 
-This application records audio from your microphone and converts speech to text in real-time. It's designed to work as a foundation for AI assistants that can listen to conversations and provide helpful suggestions.
+This application records audio from your microphone and converts speech to text in real-time and then run selected agent against the transcript.
 
 ### Main Features
 
@@ -78,9 +78,6 @@ This is just the beginning. The goal is to connect this recorder to Large Langua
 
 For detailed development information, see `CLAUDE.md` and `AGENTS.md`.
 
-## Contributing
-
-This project is in active development. The current focus is on building a solid foundation for audio recording and transcription before adding AI assistant capabilities.
 
 ## License
 
