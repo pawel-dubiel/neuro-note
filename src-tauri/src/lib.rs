@@ -1163,6 +1163,28 @@ fn start_soniox_session(
     state: State<AppState>,
     mut opts: soniox::SonioxOptions,
 ) -> Result<(), String> {
+    {
+        let mut tx_guard = state.inner().soniox_tx.lock().unwrap();
+        if let Some(existing) = tx_guard.as_ref() {
+            if existing.is_closed() {
+                log_to_file(
+                    "Transcription: detected stale Soniox sender — clearing before restart",
+                );
+                *tx_guard = None;
+            }
+        }
+    }
+
+    {
+        let mut ctrl_guard = state.inner().soniox_ctrl.lock().unwrap();
+        if let Some(existing) = ctrl_guard.as_ref() {
+            if existing.is_closed() {
+                log_to_file("Transcription: detected stale Soniox control channel — clearing");
+                *ctrl_guard = None;
+            }
+        }
+    }
+
     if state.inner().soniox_tx.lock().unwrap().is_some() {
         return Err("Soniox session already running".into());
     }

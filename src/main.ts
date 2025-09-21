@@ -16,6 +16,7 @@ let sonioxApiKeyInp: HTMLInputElement | null;
 let sonioxEnableChk: HTMLInputElement | null;
 let sonioxStatusEl: HTMLElement | null;
 let sonioxConnected = false;
+let sonioxStarting = false;
 let openaiApiKeyInp: HTMLInputElement | null;
 let openrouterApiKeyInp: HTMLInputElement | null;
 let assistantSel: HTMLSelectElement | null;
@@ -204,6 +205,60 @@ type RecordingState =
   | { type: "Resuming" }
   | { type: "Stopping" };
 
+const SONIOX_ACTIVE_STATES = new Set<RecordingState["type"]>([
+  "Recording",
+  "Resuming",
+  "Starting",
+]);
+
+type SonioxStartOptions = {
+  requireKeyPrompt?: boolean;
+  reason?: string;
+};
+
+async function tryStartSoniox(opts: SonioxStartOptions = {}): Promise<boolean> {
+  const { requireKeyPrompt = false, reason = "unspecified" } = opts;
+
+  console.log(`[Soniox] start requested (reason=${reason})`);
+
+  if (sonioxStarting || sonioxConnected) {
+    console.log("[Soniox] start skipped (already starting or connected)");
+    return false;
+  }
+
+  const api_key = (sonioxApiKeyInp?.value || "").trim();
+  if (!api_key) {
+    if (requireKeyPrompt) {
+      alert("Please enter your Soniox API key.");
+      console.error("[Soniox] start aborted — missing API key");
+      throw new Error("Missing Soniox API key");
+    }
+    console.warn("[Soniox] start aborted — API key empty and prompt not required");
+    return false;
+  }
+
+  if (sonioxStatusEl) {
+    sonioxStatusEl.textContent = "Connecting…";
+    sonioxStatusEl.className = "soniox-status connecting";
+  }
+
+  console.log("[Soniox] invoking start_soniox_session...");
+  sonioxConnected = false;
+  sonioxStarting = true;
+
+  try {
+    await invoke("start_soniox_session", {
+      opts: { api_key, audio_format: "pcm_s16le", translation: "none" },
+    });
+    console.log("[Soniox] start_soniox_session returned successfully");
+    return true;
+  } catch (err) {
+    console.error("[Soniox] start_soniox_session failed", err);
+    sonioxStarting = false;
+    throw err;
+  }
+}
+
 // Current recording state is managed by the backend now
 
 async function start() {
@@ -234,17 +289,10 @@ async function start() {
 
       // Start Soniox session for voice detection mode if enabled
       if (sonioxEnableChk?.checked && !sonioxConnected) {
-        const api_key = (sonioxApiKeyInp?.value || "").trim();
-        if (api_key) {
-          try {
-            if (sonioxStatusEl) {
-              sonioxStatusEl.textContent = "Connecting…";
-              sonioxStatusEl.className = "soniox-status connecting";
-            }
-            await invoke("start_soniox_session", { opts: { api_key, audio_format: "pcm_s16le", translation: "none" } });
-          } catch (e: any) {
-            console.error("Soniox start error in voice mode:", e);
-          }
+        try {
+          await tryStartSoniox({ reason: "voice-mode start" });
+        } catch (e: any) {
+          console.error("Soniox start error in voice mode:", e);
         }
       }
     } else {
@@ -315,17 +363,10 @@ async function resume() {
 
       // Restart Soniox session for voice detection mode if enabled
       if (sonioxEnableChk?.checked && !sonioxConnected) {
-        const api_key = (sonioxApiKeyInp?.value || "").trim();
-        if (api_key) {
-          try {
-            if (sonioxStatusEl) {
-              sonioxStatusEl.textContent = "Connecting…";
-              sonioxStatusEl.className = "soniox-status connecting";
-            }
-            await invoke("start_soniox_session", { opts: { api_key, audio_format: "pcm_s16le", translation: "none" } });
-          } catch (e: any) {
-            console.error("Soniox restart error in voice mode:", e);
-          }
+        try {
+          await tryStartSoniox({ reason: "voice-mode resume" });
+        } catch (e: any) {
+          console.error("Soniox restart error in voice mode:", e);
         }
       }
     } else {
@@ -1148,8 +1189,7 @@ window.addEventListener("DOMContentLoaded", async () => {
           statusEl.textContent = "Recording…";
           // Auto-start Soniox if enabled and not connected
           if (sonioxEnableChk?.checked && !sonioxConnected) {
-            const api_key = (sonioxApiKeyInp?.value || "").trim();
-            invoke("start_soniox_session", { opts: { api_key, audio_format: "pcm_s16le", translation: "none" } }).catch((e) => {
+            void tryStartSoniox({ reason: "auto-start recording" }).catch((e) => {
               console.error("Soniox auto-start error:", e);
             });
           }
@@ -1167,8 +1207,7 @@ window.addEventListener("DOMContentLoaded", async () => {
         case "Resuming":
           statusEl.textContent = "Resuming…";
           if (sonioxEnableChk?.checked && !sonioxConnected) {
-            const api_key = (sonioxApiKeyInp?.value || "").trim();
-            invoke("start_soniox_session", { opts: { api_key, audio_format: "pcm_s16le", translation: "none" } }).catch((e) => {
+            void tryStartSoniox({ reason: "auto-start resuming" }).catch((e) => {
               console.error("Soniox auto-start error:", e);
             });
           }
@@ -1303,6 +1342,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     if (sonioxEnableChk?.checked && sonioxStatusEl && !sonioxConnected) {
       sonioxConnected = true;
+      sonioxStarting = false;
       sonioxStatusEl.textContent = "Connected";
       sonioxStatusEl.classList.remove("connecting", "error", "off");
       sonioxStatusEl.classList.add("connected");
@@ -1317,6 +1357,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
     if (sonioxEnableChk) sonioxEnableChk.checked = false;
     sonioxConnected = false;
+    sonioxStarting = false;
   });
   listen<string>("soniox-status", (event) => {
     const st = event.payload;
@@ -1325,15 +1366,21 @@ window.addEventListener("DOMContentLoaded", async () => {
       case "connecting":
         sonioxStatusEl.textContent = "Connecting…";
         sonioxStatusEl.className = "soniox-status connecting";
+        sonioxStarting = true;
+        sonioxConnected = false;
         break;
       case "connected":
         sonioxStatusEl.textContent = "Connected";
         sonioxStatusEl.className = "soniox-status connected";
+        sonioxStarting = false;
+        sonioxConnected = true;
         break;
       case "config_sent":
         // minor state; keep as connected
         sonioxStatusEl.textContent = "Connected";
         sonioxStatusEl.className = "soniox-status connected";
+        sonioxStarting = false;
+        sonioxConnected = true;
         break;
       case "finished":
       case "closed":
@@ -1341,7 +1388,15 @@ window.addEventListener("DOMContentLoaded", async () => {
         sonioxStatusEl.textContent = "Off";
         sonioxStatusEl.className = "soniox-status off";
         sonioxConnected = false;
-        if (sonioxEnableChk) sonioxEnableChk.checked = false;
+        sonioxStarting = false;
+        if (sonioxEnableChk?.checked) {
+          const reason = SONIOX_ACTIVE_STATES.has(currentStateType)
+            ? "status-ended auto"
+            : "status-ended idle";
+          void tryStartSoniox({ reason }).catch((err) => {
+            console.warn("[Soniox] auto-restart failed", err);
+          });
+        }
         break;
     }
   });
@@ -1408,26 +1463,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (!sonioxEnableChk) return;
     try {
       if (sonioxEnableChk.checked) {
-        const api_key = (sonioxApiKeyInp?.value || "").trim();
-        if (!api_key) {
-          alert("Please enter your Soniox API key.");
-          sonioxEnableChk.checked = false;
-          return;
-        }
-        // Start immediately only if stream is active; otherwise wait for Recording
-        if (currentStateType === "Recording" || currentStateType === "Resuming") {
-          if (sonioxStatusEl) {
-            sonioxStatusEl.textContent = "Connecting…";
-            sonioxStatusEl.className = "soniox-status connecting";
-          }
-          sonioxConnected = false;
-          await invoke("start_soniox_session", { opts: { api_key, audio_format: "pcm_s16le", translation: "none" } });
-        } else {
-          if (sonioxStatusEl) {
-            sonioxStatusEl.textContent = "Off";
-            sonioxStatusEl.className = "soniox-status off";
-          }
-        }
+        const reason = SONIOX_ACTIVE_STATES.has(currentStateType)
+          ? "toggle-on active"
+          : "toggle-on idle";
+        await tryStartSoniox({ requireKeyPrompt: true, reason });
       } else {
         await invoke("stop_soniox_session");
         if (sonioxStatusEl) {
@@ -1436,6 +1475,7 @@ window.addEventListener("DOMContentLoaded", async () => {
           sonioxStatusEl.classList.add("off");
         }
         sonioxConnected = false;
+        sonioxStarting = false;
       }
     } catch (e: any) {
       console.error("Soniox toggle error:", e);
@@ -1447,6 +1487,7 @@ window.addEventListener("DOMContentLoaded", async () => {
         sonioxStatusEl.classList.add("error");
       }
       sonioxConnected = false;
+      sonioxStarting = false;
     }
   });
 });
