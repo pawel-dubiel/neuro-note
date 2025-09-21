@@ -28,6 +28,7 @@ let aiAnalysisEl: HTMLElement | null;
 let aiPrevBtn: HTMLButtonElement | null;
 let aiNextBtn: HTMLButtonElement | null;
 let aiPosEl: HTMLElement | null;
+let btnClearSession: HTMLButtonElement | null;
 let aiAnswers: string[] = [];
 let aiIndex: number = -1; // -1 means no history yet
 let lastTranscript = "";
@@ -38,6 +39,7 @@ let gateRuns = 0;
 let modelCountEl: HTMLElement | null;
 let modelRuns = 0;
 let gateLastEl: HTMLElement | null;
+let transcriptEl: HTMLElement | null;
 let currentStateType: RecordingState["type"] = "Idle";
 let currentPath: string | null = null;
 let isVoiceMode = false;
@@ -617,14 +619,57 @@ function handleAiStreamError(requestId: string, message: string) {
   }
 }
 
+async function clearTranscriptAndHistory() {
+  lastTranscript = "";
+  lastAnalyzedStable = "";
+  lastAnalysisAt = 0;
+  analyzing = false;
+  currentStreamId = null;
+  currentStreamText = "";
+
+  if (transcriptEl) {
+    transcriptEl.innerHTML = `<div class="placeholder">${DEFAULT_TRANSCRIPT_PLACEHOLDER}</div>`;
+    transcriptEl.scrollTop = 0;
+  }
+
+  aiAnswers = [];
+  aiIndex = -1;
+  renderAiAnswer();
+  setAiStatus("ready", "Ready");
+
+  if (aiPrevBtn) aiPrevBtn.disabled = true;
+  if (aiNextBtn) aiNextBtn.disabled = true;
+  if (aiPosEl) aiPosEl.textContent = "0/0";
+
+  gateRuns = 0;
+  if (gateCountEl) gateCountEl.textContent = "Gate: 0";
+  modelRuns = 0;
+  if (modelCountEl) modelCountEl.textContent = "Model: 0";
+  if (gateLastEl) {
+    gateLastEl.textContent = "Decision: -";
+    gateLastEl.removeAttribute("title");
+  }
+
+  try {
+    await invoke("clear_transcript_state");
+  } catch (err) {
+    console.error("Failed to clear backend transcript state:", err);
+  }
+
+  console.log("🧹 Cleared transcript, AI history, and counters.");
+}
+
 // Heuristic gating helpers
+const DEFAULT_TRANSCRIPT_PLACEHOLDER = "Start recording to see live transcript...";
+const DEFAULT_AI_PLACEHOLDER = "Enable AI analysis to see insights and follow-up questions...";
 const MIN_ANALYSIS_INTERVAL_MS = 4000; // throttle expensive calls
 const MIN_NEW_CHARS = 30;              // require meaningful delta
 
 function stripTentative(text: string): string {
-  // Remove segments formatted as tentative (rendered with underscores)
-  // Keep it conservative to avoid over-removal
-  return text.replace(/_+[^_]*_+/g, "");
+  // Remove tentative segments (underscored) and Soniox separator line
+  return text
+    .replace(/_+[^_]*_+/g, "")
+    .replace(/\n=+\s*$/g, "");
 }
 
 function isStable(text: string): boolean {
@@ -1016,6 +1061,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   aiStatusEl = document.querySelector("#ai-status");
   openrouterCreditsEl = document.querySelector("#openrouter-credits");
   aiAnalysisEl = document.querySelector("#ai-analysis");
+  transcriptEl = document.querySelector("#transcript");
+  btnClearSession = document.querySelector("#btn-clear-session") as HTMLButtonElement | null;
 
   // Panel toggle functionality
   setupPanelToggles();
@@ -1049,6 +1096,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // Load assistants on startup
   await loadAssistants();
+
+  btnClearSession?.addEventListener("click", () => {
+    void clearTranscriptAndHistory();
+  });
 
   btnStart?.addEventListener("click", start);
   btnPause?.addEventListener("click", pause);
@@ -1147,7 +1198,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   // Soniox transcript events
-  const transcriptEl = document.getElementById("transcript");
   gateCountEl = document.getElementById("gate-count");
   modelCountEl = document.getElementById("model-count");
   gateLastEl = document.getElementById("gate-last");
@@ -1418,7 +1468,7 @@ function renderAiAnswer() {
     if (!placeholder) {
       const ph = document.createElement("div");
       ph.className = "placeholder";
-      ph.textContent = "No answers yet.";
+      ph.textContent = DEFAULT_AI_PLACEHOLDER;
       aiAnalysisEl.innerHTML = "";
       aiAnalysisEl.appendChild(ph);
     }
