@@ -30,7 +30,6 @@ pub enum AiProvider {
     Openrouter,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenRouterConfig {
     pub api_key: String,
@@ -62,8 +61,7 @@ pub struct UIConfig {
     pub ai_provider: AiProvider,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     pub soniox: SonioxConfig,
     pub openai: OpenAIConfig,
@@ -155,7 +153,6 @@ impl Default for UIConfig {
         }
     }
 }
-
 
 pub struct ConfigManager;
 

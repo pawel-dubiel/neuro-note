@@ -263,10 +263,7 @@ pub fn render_tokens(
             .to_string();
 
         speaker_lang.entry(speaker).or_insert(language);
-        speaker_text
-            .entry(speaker)
-            .or_default()
-            .push_str(&raw);
+        speaker_text.entry(speaker).or_default().push_str(&raw);
 
         if !speaker_order.contains(&speaker) {
             speaker_order.push(speaker);
@@ -284,10 +281,7 @@ pub fn render_tokens(
 
             let speaker = extract_speaker_id(token.get("speaker"), last_speaker_seen);
 
-            speaker_text
-                .entry(speaker)
-                .or_default()
-                .push_str(&clean);
+            speaker_text.entry(speaker).or_default().push_str(&clean);
 
             if !speaker_order.contains(&speaker) {
                 speaker_order.push(speaker);

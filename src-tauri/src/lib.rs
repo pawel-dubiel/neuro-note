@@ -51,7 +51,6 @@ enum RecordingState {
     Stopping,
 }
 
-
 // Commands for recording operations
 #[derive(Debug, Clone)]
 enum RecordingCommand {

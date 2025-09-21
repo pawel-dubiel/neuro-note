@@ -1,4 +1,9 @@
-use crate::{assistants::render_user_prompt, gate::GateJson, openai, utils::log_to_file};
+use crate::{
+    assistants::render_user_prompt,
+    gate::{self, GateJson, GatePrompt},
+    openai,
+    utils::log_to_file,
+};
 use openrouter_rs::{
     api::chat::{ChatCompletionRequest, Message},
     api::credits::CreditsData,
@@ -130,44 +135,25 @@ pub async fn run_gate(
     previous_transcript: String,
     last_output: Option<String>,
 ) -> Result<GateJson, String> {
-    if current_transcript.trim().is_empty() {
-        log_to_file("OpenRouter(Gate): Skip — empty transcript");
-        return Ok(GateJson {
-            run: false,
-            instruction: Some("NOT_NEEDED".into()),
-            reason: Some("Empty transcript".into()),
-            confidence: Some(1.0),
-        });
-    }
-
-    let system_prompt = format!(
-        "You decide if the main assistant should re-run.\nRole: {}\nRules: {}\nOutput MUST be STRICT JSON with keys: run(boolean), instruction(NEEDED|NOT_NEEDED), reason(string), confidence(number). No extra text.",
+    let prompt = match gate::prepare_gate_prompt(
+        "OpenRouter",
         main_system_prompt,
-        gate_instructions
-    );
+        gate_instructions,
+        &current_transcript,
+        &previous_transcript,
+        last_output.as_deref(),
+    ) {
+        Ok(prompt) => prompt,
+        Err(skip) => return Ok(skip),
+    };
 
-    let last_out_len = last_output.as_ref().map(|s| s.len()).unwrap_or(0);
-    let last_out_text = last_output.unwrap_or_default();
+    gate::log_gate_prompt("OpenRouter", model, &prompt);
 
-    let user_prompt = format!(
-        "Current transcript:\n{}\n\nPrevious transcript:\n{}\n\nLast output (optional):\n{}\n\nReturn ONLY this JSON: {{\"run\": boolean, \"instruction\": \"NEEDED\"|\"NOT_NEEDED\", \"reason\": string, \"confidence\": number}}",
-        current_transcript,
-        previous_transcript,
-        last_out_text
-    );
-
-    log_to_file(&format!(
-        "OpenRouter(Gate): Prompt system=<<<{}>>> user=<<<{}>>>",
-        system_prompt, user_prompt
-    ));
-
-    log_to_file(&format!(
-        "OpenRouter(Gate): Request model={} current_len={} previous_len={} last_out_len={}",
-        model,
-        current_transcript.len(),
-        previous_transcript.len(),
-        last_out_len
-    ));
+    let GatePrompt {
+        system_prompt,
+        user_prompt,
+        ..
+    } = prompt;
 
     let messages = vec![
         Message::new(Role::System, &system_prompt),
@@ -195,50 +181,12 @@ pub async fn run_gate(
         let content = choice.content().unwrap_or_default().trim().to_string();
         log_to_file(&format!("OpenRouter(Gate): Raw response=<<<{}>>>", content));
 
-        match serde_json::from_str::<GateJson>(&content) {
-            Ok(mut g) => {
-                if g.instruction.is_none() {
-                    g.instruction = Some(if g.run {
-                        "NEEDED".into()
-                    } else {
-                        "NOT_NEEDED".into()
-                    });
-                }
-                log_to_file(&format!(
-                    "OpenRouter(Gate): Decision run={} instruction={:?} confidence={:?} reason={}",
-                    g.run,
-                    g.instruction,
-                    g.confidence,
-                    g.reason.clone().unwrap_or_default()
-                ));
-                Ok(g)
-            }
-            Err(e) => {
-                log_to_file(&format!(
-                    "OpenRouter(Gate): JSON parse error: {} | content: {}",
-                    e, content
-                ));
-                let ends = current_transcript.trim_end().ends_with(['.', '!', '?']);
-                let growth = current_transcript
-                    .len()
-                    .saturating_sub(previous_transcript.len());
-                let run = ends && growth >= 50;
-                log_to_file(&format!(
-                    "OpenRouter(Gate): Fallback decision run={} ends_sentence={} growth_chars={}",
-                    run, ends, growth
-                ));
-                Ok(GateJson {
-                    run,
-                    instruction: Some(if run {
-                        "NEEDED".into()
-                    } else {
-                        "NOT_NEEDED".into()
-                    }),
-                    reason: Some("Fallback heuristic".into()),
-                    confidence: Some(0.3),
-                })
-            }
-        }
+        Ok(gate::interpret_gate_response(
+            "OpenRouter",
+            &content,
+            &current_transcript,
+            &previous_transcript,
+        ))
     } else {
         Err("No response from OpenRouter".into())
     }

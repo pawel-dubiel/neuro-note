@@ -1,4 +1,4 @@
-use crate::utils::log_to_file;
+use crate::{openai, utils::log_to_file};
 use serde::{Deserialize, Serialize};
 
 // Reuse chat request/response structures from a minimal local definition
@@ -70,15 +70,29 @@ pub struct GateJson {
     pub confidence: Option<f32>,
 }
 
-pub async fn should_run_gate(
-    opts: GateOptions,
-    current_transcript: String,
-    previous_transcript: String,
-    last_output: Option<String>,
-) -> Result<GateJson, String> {
+#[derive(Debug, Clone)]
+pub struct GatePrompt {
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub current_len: usize,
+    pub previous_len: usize,
+    pub last_output_len: usize,
+}
+
+pub fn prepare_gate_prompt(
+    provider_label: &str,
+    main_system_prompt: &str,
+    gate_instructions: &str,
+    current_transcript: &str,
+    previous_transcript: &str,
+    last_output: Option<&str>,
+) -> Result<GatePrompt, GateJson> {
     if current_transcript.trim().is_empty() {
-        log_to_file("OpenAI(Gate): Skip — empty transcript");
-        return Ok(GateJson {
+        log_to_file(&format!(
+            "{}(Gate): Skip — empty transcript",
+            provider_label
+        ));
+        return Err(GateJson {
             run: false,
             instruction: Some("NOT_NEEDED".into()),
             reason: Some("Empty transcript".into()),
@@ -86,39 +100,131 @@ pub async fn should_run_gate(
         });
     }
 
-    // Compact prompt to keep tokens low; explicitly require a clear instruction output
     let system_prompt = format!(
-    "You decide if the main assistant should re-run.\nRole: {}\nRules: {}\nOutput MUST be STRICT JSON with keys: run(boolean), instruction(NEEDED|NOT_NEEDED), reason(string), confidence(number). No extra text.",
-    opts.main_system_prompt,
-    opts.gate_instructions
-  );
+        "You decide if the main assistant should re-run.\nRole: {}\nRules: {}\nOutput MUST be STRICT JSON with keys: run(boolean), instruction(NEEDED|NOT_NEEDED), reason(string), confidence(number). No extra text.",
+        main_system_prompt,
+        gate_instructions
+    );
 
-    // Safely derive last output values without moving the Option more than once
-    let last_out_len = last_output.as_ref().map(|s| s.len()).unwrap_or(0);
-    let last_out_text = last_output.unwrap_or_default();
+    let (last_output_text, last_output_len) = match last_output {
+        Some(text) => (text, text.len()),
+        None => ("", 0),
+    };
 
     let user_prompt = format!(
-    "Current transcript:\n{}\n\nPrevious transcript:\n{}\n\nLast output (optional):\n{}\n\nReturn ONLY this JSON: {{\"run\": boolean, \"instruction\": \"NEEDED\"|\"NOT_NEEDED\", \"reason\": string, \"confidence\": number}}",
-    current_transcript,
-    previous_transcript,
-    last_out_text
-  );
+        "Current transcript:\n{}\n\nPrevious transcript:\n{}\n\nLast output (optional):\n{}\n\nReturn ONLY this JSON: {{\"run\": boolean, \"instruction\": \"NEEDED\"|\"NOT_NEEDED\", \"reason\": string, \"confidence\": number}}",
+        current_transcript,
+        previous_transcript,
+        last_output_text
+    );
 
+    Ok(GatePrompt {
+        system_prompt,
+        user_prompt,
+        current_len: current_transcript.len(),
+        previous_len: previous_transcript.len(),
+        last_output_len,
+    })
+}
+
+pub fn log_gate_prompt(provider_label: &str, model: &str, prompt: &GatePrompt) {
     log_to_file(&format!(
-        "OpenAI(Gate): Prompt system=<<<{}>>> user=<<<{}>>>",
-        system_prompt, user_prompt
+        "{}(Gate): Prompt system=<<<{}>>> user=<<<{}>>>",
+        provider_label, prompt.system_prompt, prompt.user_prompt
     ));
 
     log_to_file(&format!(
-        "OpenAI(Gate): Request model={} current_len={} previous_len={} last_out_len={}",
-        opts.model,
-        current_transcript.len(),
-        previous_transcript.len(),
-        last_out_len
+        "{}(Gate): Request model={} current_len={} previous_len={} last_out_len={}",
+        provider_label, model, prompt.current_len, prompt.previous_len, prompt.last_output_len
     ));
+}
+
+pub fn interpret_gate_response(
+    provider_label: &str,
+    content: &str,
+    current_transcript: &str,
+    previous_transcript: &str,
+) -> GateJson {
+    match serde_json::from_str::<GateJson>(content) {
+        Ok(mut gate) => {
+            if gate.instruction.is_none() {
+                gate.instruction = Some(if gate.run {
+                    "NEEDED".into()
+                } else {
+                    "NOT_NEEDED".into()
+                });
+            }
+
+            log_to_file(&format!(
+                "{}(Gate): Decision run={} instruction={:?} confidence={:?} reason={}",
+                provider_label,
+                gate.run,
+                gate.instruction,
+                gate.confidence,
+                gate.reason.clone().unwrap_or_default()
+            ));
+
+            gate
+        }
+        Err(err) => {
+            log_to_file(&format!(
+                "{}(Gate): JSON parse error: {} | content: {}",
+                provider_label, err, content
+            ));
+
+            let ends_sentence = current_transcript.trim_end().ends_with(['.', '!', '?']);
+            let growth = current_transcript
+                .len()
+                .saturating_sub(previous_transcript.len());
+            let run = ends_sentence && growth >= 50;
+
+            log_to_file(&format!(
+                "{}(Gate): Fallback decision run={} ends_sentence={} growth_chars={}",
+                provider_label, run, ends_sentence, growth
+            ));
+
+            GateJson {
+                run,
+                instruction: Some(if run {
+                    "NEEDED".into()
+                } else {
+                    "NOT_NEEDED".into()
+                }),
+                reason: Some("Fallback heuristic".into()),
+                confidence: Some(0.3),
+            }
+        }
+    }
+}
+
+pub async fn should_run_gate(
+    opts: GateOptions,
+    current_transcript: String,
+    previous_transcript: String,
+    last_output: Option<String>,
+) -> Result<GateJson, String> {
+    let prompt = match prepare_gate_prompt(
+        "OpenAI",
+        &opts.main_system_prompt,
+        &opts.gate_instructions,
+        &current_transcript,
+        &previous_transcript,
+        last_output.as_deref(),
+    ) {
+        Ok(prompt) => prompt,
+        Err(skip) => return Ok(skip),
+    };
+
+    log_gate_prompt("OpenAI", &opts.model, &prompt);
+
+    let GatePrompt {
+        system_prompt,
+        user_prompt,
+        ..
+    } = prompt;
 
     let model_id = opts.model.clone();
-    let temp = temperature_for_model(&model_id, 0.0);
+    let temp = openai::temperature_for_model(&model_id, 0.0);
     let request = ChatRequest {
         model: model_id,
         messages: vec![
@@ -164,62 +270,15 @@ pub async fn should_run_gate(
         .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
 
     if let Some(choice) = chat.choices.first() {
-        let content = choice.message.content.trim();
+        let content = choice.message.content.trim().to_string();
         log_to_file(&format!("OpenAI(Gate): Raw response=<<<{}>>>", content));
-        // Attempt to parse strict JSON; if fails, fallback to simple heuristic
-        match serde_json::from_str::<GateJson>(content) {
-            Ok(mut g) => {
-                if g.instruction.is_none() {
-                    g.instruction = Some(if g.run {
-                        "NEEDED".into()
-                    } else {
-                        "NOT_NEEDED".into()
-                    });
-                }
-                log_to_file(&format!(
-                    "OpenAI(Gate): Decision run={} instruction={:?} confidence={:?} reason={}",
-                    g.run,
-                    g.instruction,
-                    g.confidence,
-                    g.reason.clone().unwrap_or_default()
-                ));
-                Ok(g)
-            }
-            Err(e) => {
-                log_to_file(&format!(
-                    "OpenAI(Gate): JSON parse error: {} | content: {}",
-                    e, content
-                ));
-                // Heuristic fallback: trigger if there is a growth of >= 50 chars and ends with sentence punctuation
-                let ends = current_transcript.trim_end().ends_with(['.', '!', '?']);
-                let growth = current_transcript
-                    .len()
-                    .saturating_sub(previous_transcript.len());
-                let run = ends && growth >= 50;
-                log_to_file(&format!(
-                    "OpenAI(Gate): Fallback decision run={} ends_sentence={} growth_chars={}",
-                    run, ends, growth
-                ));
-                Ok(GateJson {
-                    run,
-                    instruction: Some(if run {
-                        "NEEDED".into()
-                    } else {
-                        "NOT_NEEDED".into()
-                    }),
-                    reason: Some("Fallback heuristic".into()),
-                    confidence: Some(0.3),
-                })
-            }
-        }
+        Ok(interpret_gate_response(
+            "OpenAI",
+            &content,
+            &current_transcript,
+            &previous_transcript,
+        ))
     } else {
         Err("No response from OpenAI".into())
-    }
-}
-fn temperature_for_model(model: &str, default: f32) -> f32 {
-    if model.starts_with("gpt-5") || model.contains("gpt-5") {
-        1.0
-    } else {
-        default
     }
 }
