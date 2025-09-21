@@ -1,24 +1,16 @@
-use crate::utils::log_to_file;
+use crate::{assistants::render_user_prompt, utils::log_to_file};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OpenAIOptions {
     pub api_key: String,
-    #[serde(default = "default_model")]
     pub model: String,
-    #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
     #[serde(default)]
     pub output_policy: String,
-}
-
-fn default_model() -> String {
-    "gpt-4.1".into()
-}
-
-fn default_system_prompt() -> String {
-    "You are an AI assistant that analyzes conversations and answers questions in the language that conversation is going on".into()
+    #[serde(default = "crate::assistants::default_user_prompt_template")]
+    pub user_prompt: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -77,10 +69,7 @@ pub async fn analyze_conversation(
         format!("{}\n\n{}", opts.system_prompt, opts.output_policy)
     };
 
-    let user_prompt = format!(
-    "Analyze the latest user intent in the transcript.\n- If a previous assistant answer is shown above, DO NOT repeat it.\n- Only add new information, corrections, or next steps relevant to the newest utterances.\n- Be concise and avoid duplication.\n\n{}",
-    transcript
-  );
+    let user_prompt = render_user_prompt(&opts.user_prompt, &transcript);
 
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
