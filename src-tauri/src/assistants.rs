@@ -13,6 +13,12 @@ pub struct Assistant {
     pub gate_instructions: String,
     #[serde(default)]
     pub output_policy: String,
+    #[serde(default = "default_user_prompt_template")]
+    pub user_prompt: String,
+}
+
+pub fn default_user_prompt_template() -> String {
+    "Analyze the latest user intent in the transcript.\n- If a previous assistant answer is shown above, DO NOT repeat it.\n- Only add new information, corrections, or next steps relevant to the newest utterances.\n- Be concise and avoid duplication.\n\n{{transcript}}".into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -66,6 +72,12 @@ impl AssistantManager {
                                     assistant.id
                                 ));
                             }
+                            if assistant.user_prompt.trim().is_empty() {
+                                return Err(format!(
+                                    "Assistant '{}' has empty user_prompt",
+                                    assistant.id
+                                ));
+                            }
                             assistants.insert(assistant.id.clone(), assistant);
                         }
 
@@ -112,5 +124,27 @@ impl AssistantManager {
 
     pub fn get_default_id(&self) -> &str {
         &self.default_id
+    }
+}
+
+pub fn render_user_prompt(template: &str, transcript: &str) -> String {
+    if template.contains("{{transcript}}") || template.contains("{{TRANSCRIPT}}") {
+        let mut replaced = template.replace("{{transcript}}", transcript);
+        if replaced.contains("{{TRANSCRIPT}}") {
+            replaced = replaced.replace("{{TRANSCRIPT}}", transcript);
+        }
+        replaced
+    } else {
+        let mut base = template.to_string();
+        if base.trim().is_empty() {
+            transcript.to_string()
+        } else {
+            let needs_gap = !base.ends_with('\n');
+            if needs_gap {
+                base.push_str("\n\n");
+            }
+            base.push_str(transcript);
+            base
+        }
     }
 }
