@@ -23,16 +23,13 @@ pub struct OpenAIConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum AiProvider {
+    #[default]
     Openai,
     Openrouter,
 }
 
-impl Default for AiProvider {
-    fn default() -> Self {
-        AiProvider::Openai
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenRouterConfig {
@@ -66,6 +63,7 @@ pub struct UIConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct AppConfig {
     pub soniox: SonioxConfig,
     pub openai: OpenAIConfig,
@@ -158,17 +156,6 @@ impl Default for UIConfig {
     }
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            soniox: SonioxConfig::default(),
-            openai: OpenAIConfig::default(),
-            openrouter: OpenRouterConfig::default(),
-            recording: RecordingConfig::default(),
-            ui: UIConfig::default(),
-        }
-    }
-}
 
 pub struct ConfigManager;
 

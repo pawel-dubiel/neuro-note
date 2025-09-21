@@ -34,7 +34,9 @@ pub mod lame_encoder;
 // State machine for recording operations
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", content = "data")]
+#[derive(Default)]
 enum RecordingState {
+    #[default]
     Idle,
     Starting,
     Recording {
@@ -49,11 +51,6 @@ enum RecordingState {
     Stopping,
 }
 
-impl Default for RecordingState {
-    fn default() -> Self {
-        RecordingState::Idle
-    }
-}
 
 // Commands for recording operations
 #[derive(Debug, Clone)]
@@ -433,7 +430,7 @@ fn start_recording(
     let out_path = if let Some(p) = path {
         PathBuf::from(p)
     } else {
-        let mut base = dirs_next::document_dir().unwrap_or_else(|| std::env::temp_dir());
+        let mut base = dirs_next::document_dir().unwrap_or_else(std::env::temp_dir);
         let ts = chrono::Local::now()
             .format(&format!("recording-%Y%m%d-%H%M%S.{}", file_extension))
             .to_string();
@@ -709,7 +706,7 @@ fn arm_auto_recording(
                     "mp3" => "mp3",
                     _ => "wav",
                 };
-                let mut base = dirs_next::document_dir().unwrap_or_else(|| std::env::temp_dir());
+                let mut base = dirs_next::document_dir().unwrap_or_else(std::env::temp_dir);
                 let ts = chrono::Local::now()
                     .format(&format!("recording-%Y%m%d-%H%M%S.{}", file_extension))
                     .to_string();
@@ -845,7 +842,7 @@ fn arm_auto_recording(
                 peak = if af > peak { af } else { peak };
                 sum_sq += f * f;
             }
-            let rms = if as_i16.len() > 0 {
+            let rms = if !as_i16.is_empty() {
                 (sum_sq / (as_i16.len() as f32)).sqrt()
             } else {
                 0.0

@@ -193,7 +193,7 @@ pub async fn start_session(
                       // If we have any meaningful content, emit it
                       if has_tokens || !text.is_empty() {
                         if suppress_repeat.is_some() {
-                          if suppress_repeat.as_ref().map(|s| s.as_str()) == Some(text.as_str()) {
+                          if suppress_repeat.as_deref() == Some(text.as_str()) {
                             // Skip emitting the same text immediately after a clear request
                             continue;
                           } else {
@@ -265,7 +265,7 @@ pub fn render_tokens(
         speaker_lang.entry(speaker).or_insert(language);
         speaker_text
             .entry(speaker)
-            .or_insert_with(String::new)
+            .or_default()
             .push_str(&raw);
 
         if !speaker_order.contains(&speaker) {
@@ -286,7 +286,7 @@ pub fn render_tokens(
 
             speaker_text
                 .entry(speaker)
-                .or_insert_with(String::new)
+                .or_default()
                 .push_str(&clean);
 
             if !speaker_order.contains(&speaker) {

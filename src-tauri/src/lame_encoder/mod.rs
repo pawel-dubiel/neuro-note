@@ -4,7 +4,6 @@ use lame_ffi::LamePtr;
 use std::convert::From;
 use std::ops::Drop;
 use std::os::raw::c_int;
-use std::ptr;
 
 #[derive(Debug)]
 pub enum Error {
@@ -39,7 +38,7 @@ fn handle_simple_error(retn: c_int) -> Result<(), Error> {
 }
 
 fn int_size(sz: usize) -> c_int {
-    if sz > c_int::max_value() as usize {
+    if sz > c_int::MAX as usize {
         panic!("converting {} to c_int would overflow", sz);
     }
 
@@ -72,7 +71,7 @@ impl Lame {
     pub fn new() -> Option<Lame> {
         let ctx = unsafe { lame_ffi::lame_init() };
 
-        if ctx == ptr::null_mut() {
+        if ctx.is_null() {
             None
         } else {
             Some(Lame { ptr: ctx })

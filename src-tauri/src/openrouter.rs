@@ -169,9 +169,10 @@ pub async fn run_gate(
         last_out_len
     ));
 
-    let mut messages = Vec::with_capacity(2);
-    messages.push(Message::new(Role::System, &system_prompt));
-    messages.push(Message::new(Role::User, &user_prompt));
+    let messages = vec![
+        Message::new(Role::System, &system_prompt),
+        Message::new(Role::User, &user_prompt),
+    ];
 
     let request = ChatCompletionRequest::builder()
         .model(model.to_string())

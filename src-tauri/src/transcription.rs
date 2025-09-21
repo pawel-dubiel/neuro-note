@@ -18,18 +18,11 @@ pub enum ProviderKind {
     Soniox,
 }
 
-// Trait for real-time transcription providers.
-// Start should spawn any background tasks and return a handle to push audio.
-#[allow(unused_variables)]
-pub trait TranscriptionProvider {
-    fn kind(&self) -> ProviderKind;
-}
-
 pub mod providers {
-    use super::{AudioChunk, TranscriptionHandle};
+    use super::TranscriptionHandle;
 
     pub mod soniox_adapter {
-        use super::{AudioChunk, TranscriptionHandle};
+        use super::TranscriptionHandle;
         use crate::soniox::{self, SonioxOptions};
         use tauri::AppHandle;
 
