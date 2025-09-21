@@ -1,88 +1,48 @@
-# Voice Assistant Recorder
+# Neuro Note
 
-A smart audio recording application that listens to your conversations and provides real-time speech-to-text transcription. Built for the AI-powered voice assistants.
+Neuro Note captures conversations, transcribes them in real time, and routes the transcript through configurable AI assistants. The project favours predictable behaviour: missing configuration is treated as an error and surfaces immediately.
 
-## What it does
+## Capabilities
 
-This application records audio from your microphone and converts speech to text in real-time and then run selected agent against the transcript.
-
-### Main Features
-
-- **Smart Voice Detection** - Automatically starts recording when you speak and stops when you're quiet
-- **Manual Recording** - Click to start/stop recording whenever you want
-- **Live Transcription** - See your words appear on screen as you speak (powered by Soniox API)
-- **High-Quality Audio** - Save recordings in WAV or MP3 format
-- **Real-time Audio Levels** - Visual feedback shows when the microphone picks up sound
-
-### Recording Modes
-
-1. **Voice Detection Mode** - The app listens and automatically records when it hears speech
-2. **Manual Mode** - You control when recording starts and stops
-
-## The Big Idea: AI Assistant Integration
-
-This is just the beginning. The goal is to connect this recorder to Large Language Models (LLMs) that can act as intelligent assistants. Here's the vision:
-
-### Future AI Capabilities
-
-- **Smart Interruptions** - The AI assistant can join conversations at the right moment to offer help
-- **Context-Aware Suggestions** - Based on what you're discussing, the assistant proposes relevant solutions
-- **Voice-Controlled Actions** - Tell the assistant to execute tasks, make requests, or control other systems
-- **Agent Coordination** - Multiple AI agents can work together, each with different specialties
-- **MCP Protocol Support** - The assistant can connect to various services and tools using the Model Context Protocol
-
-### Example Use Cases
-
-- **Meeting Assistant** - Listens to your business meetings and suggests action items or finds relevant documents
-- **Learning Companion** - Helps during study sessions by answering questions or explaining concepts
-- **Technical Support** - Monitors technical discussions and offers solutions or documentation
-- **Creative Partner** - Assists during brainstorming sessions with ideas and feedback
+- **Consistent audio capture** – Manual sessions create timestamped files while voice-activated mode arms a VAD loop that writes only when speech is detected; both paths share the same pause/resume controls and state machine.
+- **Format and quality control** – Record to WAV or MP3, pick MP3 encoding quality, and rely on buffered LAME encoding so sessions flush cleanly on stop.
+- **Live transcription** – Streams microphone audio to Soniox for sentence-by-sentence updates, language identification, diarization, and optional translation; the UI keeps tentative text separate from confirmed results.
+- **Transcript-aware AI analysis** – Maintains multiple assistant profiles, runs gating checks before calling a main model, tracks model vs gate invocations, and keeps a scrollable history of answers.
+- **Provider flexibility** – Switch between OpenAI and OpenRouter at runtime, fetch model lists after keys are entered, and display OpenRouter credit usage without caching stale data.
+- **Transparent operations** – On-screen meters show input levels, every state change is emitted to the UI, and detailed logs land in `~/Documents/vad_debug.log` for troubleshooting.
 
 ## Getting Started
 
-### Requirements
+1. Install a recent Node.js (for the UI tooling) and the Rust toolchain (for the native backend).
+2. Install dependencies with `npm install`.
+3. Duplicate `config/config.example.json` to `config/config.local.json` and fill in the sections you plan to use. Missing keys cause explicit errors; do not leave placeholders.
+4. (Optional) Copy `config/soniox.example.json` to `config/soniox.local.json` with your Soniox key to enable live transcription.
+5. (Optional) Edit `config/assistants.json` to define assistant profiles, system prompts, and output policies.
+6. Start the UI with `npm run dev` or launch the desktop shell with `npm run tauri dev`.
 
-- Node.js and npm
-- Rust and Cargo
-- A Soniox API key for transcription (optional)
+## Runtime Overview
 
-### Setup
+- Choose manual recording to pick a save path immediately, or enable the voice detector to wait for speech before writing audio.
+- The pause/resume controls work for both modes and keep the state machine in sync with the UI indicators.
+- When transcription is enabled, the app opens a websocket session, forwards 16 kHz PCM frames, and emits transcript deltas back to the interface.
+- AI analysis runs only after the gate model returns `run=true`, at which point the selected assistant template renders the user prompt and calls the provider model. Results are logged and stored in the client-side history stack.
 
-1. Clone this repository
-2. Install dependencies: `npm install`
-3. Set up Soniox (optional):
-   - Create `config/soniox.local.json`
-   - Add your API key: `{"api_key": "your_key_here"}`
-4. Run the app: `npm run tauri dev`
+## Configuration Notes
 
-### Basic Usage
+- `config/config.local.json` holds runtime toggles: recording defaults, provider selection, and API keys. The loader refuses to start if required sections are missing.
+- `config/assistants.json` defines assistant metadata. Empty IDs, prompts, or names raise errors during load to avoid falling back to undefined behaviour.
+- `config/soniox.local.json` is only needed when transcription is active; the UI warns and refuses to start a session if the key is missing.
+- UI changes persist through the config modal by calling `save_app_config`, so keep the file writable during development.
 
-1. Open the application
-2. Choose your recording mode (voice detection or manual)
-3. If using Soniox, check "Enable Soniox" and make sure your API key is configured
-4. Start talking - your speech will be recorded and transcribed in real-time
+## Plans
 
-## Technical Details
+1. Ship the multi-stage pause/resume refactor outlined in `TODO.md`, including atomic state transitions and dedicated command processing.
+2. Separate audio capture, buffering, and file writing threads to remove locking contention and improve failure recovery.
+3. Extend the automated test suite with stress cases for rapid state flips, transcript gating, and audio encoder flush behaviour.
+4. Polish the voice detection UX with clearer status messaging and shortcuts once the new state machine is in place.
 
-- **Frontend**: TypeScript + Vite for the user interface
-- **Backend**: Rust + Tauri for audio processing and system integration
-- **Audio**: Cross-platform recording using CPAL library
-- **Transcription**: Real-time speech-to-text via Soniox WebSocket API
-- **Formats**: Supports WAV and MP3 audio output
+## Diagnostics
 
-## Development
-
-- `npm run dev` - Start development server
-- `npm run tauri dev` - Run the full desktop application
-- `npm run build` - Build for production
-
-For detailed development information, see `CLAUDE.md` and `AGENTS.md`.
-
-
-## License
-
-This project is for experimental and educational purposes.
-
----
-
-*This is an experimental project exploring the future of voice-controlled AI assistants. The recording and transcription features work today, while the AI integration is planned for future development.*
+- Streaming and AI activity is logged via `utils::log_to_file`; inspect `~/Documents/vad_debug.log` when debugging voice detection or API calls.
+- Use `cargo test --manifest-path src-tauri/Cargo.toml` to run backend tests and `npm run build` for TypeScript type checks.
+- If the UI shows `Gate: -` or `Credits: ?`, review API keys and rerun `load_assistants` from the config modal; the app will not fall back to anonymous requests.
