@@ -1252,7 +1252,7 @@ async fn stream_ai_analysis(
 
     let provider_kind = resolve_provider(provider, &state);
 
-    let (system_prompt, output_policy) = {
+    let (system_prompt, output_policy, user_prompt_template) = {
         let manager = state.assistant_manager.lock().unwrap();
         let assistant = if let Some(id) = assistant_id {
             manager
@@ -1264,6 +1264,7 @@ async fn stream_ai_analysis(
         (
             assistant.system_prompt.clone(),
             assistant.output_policy.clone(),
+            assistant.user_prompt.clone(),
         )
     };
 
@@ -1303,8 +1304,9 @@ async fn stream_ai_analysis(
             let opts = openai::OpenAIOptions {
                 api_key,
                 model: selected_model,
-                system_prompt,
-                output_policy,
+                system_prompt: system_prompt.clone(),
+                output_policy: output_policy.clone(),
+                user_prompt: user_prompt_template.clone(),
             };
             match openai::analyze_conversation(opts, trimmed_transcript, last_output.clone()).await
             {
@@ -1338,6 +1340,7 @@ async fn stream_ai_analysis(
             let messages = openrouter::compose_messages(
                 &system_prompt,
                 &output_policy,
+                &user_prompt_template,
                 &trimmed_transcript,
                 last_output.as_deref(),
             );
@@ -1419,7 +1422,7 @@ async fn analyze_with_openai(
         return Err("OpenAI API key is required".to_string());
     }
 
-    let (system_prompt, output_policy) = {
+    let (system_prompt, output_policy, user_prompt) = {
         let manager = state.assistant_manager.lock().unwrap();
         let assistant = if let Some(id) = assistant_id {
             manager
@@ -1431,6 +1434,7 @@ async fn analyze_with_openai(
         (
             assistant.system_prompt.clone(),
             assistant.output_policy.clone(),
+            assistant.user_prompt.clone(),
         )
     };
 
@@ -1439,6 +1443,7 @@ async fn analyze_with_openai(
         model: model.unwrap_or_else(|| "gpt-4.1".to_string()),
         system_prompt,
         output_policy,
+        user_prompt,
     };
 
     openai::analyze_conversation(opts, transcript, last_output).await
